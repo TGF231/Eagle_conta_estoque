@@ -152,6 +152,11 @@ EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(2, 'AJUSTE DE ESTOQUE', 5.5, '2026-09
 A data usa o formato ISO (`YYYY-MM-DD HH:MM:SS`), interpretado pelo Firebird
 independentemente do idioma da conexão.
 
+O script gerado ainda **recomputa o estoque de todos os itens antes e depois**
+dos lançamentos, com um `EXECUTE BLOCK` que percorre `PRODUTOS` e chama
+`KARDEX_RECOMPUTA`. Por isso o `.sql` usa `SET TERM ^` em volta dos blocos (é
+PSQL e precisa disso para rodar em isql/IBExpert).
+
 ## Desenvolvimento
 
 Instale as dependências de desenvolvimento e rode os testes:

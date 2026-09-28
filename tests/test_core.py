@@ -117,6 +117,33 @@ def test_aggregate_rows_sem_duplicados_mantem_tudo():
     assert [(r.produtos_id, r.quantidade) for r in agg] == [(1, 10.0), (2, 20.0)]
 
 
+def test_build_script_envolve_com_recomputa_antes_e_depois():
+    from kardex_app.core import RECOMPUTA_DATA, build_script
+
+    stmts = ["EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'X', 5, '2026-01-01 00:00:00');"]
+    script = build_script(stmts)
+    # dois blocos de recompute (antes e depois)
+    assert script.count("KARDEX_RECOMPUTA(:PRODUTOS_ID") == 2
+    assert script.count("EXECUTE BLOCK") == 2
+    assert RECOMPUTA_DATA in script
+    # o lançamento fica entre os dois recomputes
+    i1 = script.find("KARDEX_RECOMPUTA")
+    ialt = script.find("KARDEX_ALTERA_QUANTIDADE")
+    i2 = script.rfind("KARDEX_RECOMPUTA")
+    assert i1 < ialt < i2
+    # terminadores para o EXECUTE BLOCK rodar em isql/IBExpert
+    assert "SET TERM ^ ;" in script and "SET TERM ; ^" in script
+
+
+def test_build_script_sem_recomputa():
+    from kardex_app.core import build_script
+
+    stmts = ["EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'X', 5, 'd');"]
+    script = build_script(stmts, com_recomputa=False)
+    assert "KARDEX_RECOMPUTA" not in script
+    assert script.strip() == stmts[0]
+
+
 def test_generate_zero_statements():
     from kardex_app.core import generate_zero_statements
 

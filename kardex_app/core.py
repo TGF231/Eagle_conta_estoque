@@ -398,9 +398,47 @@ def generate_zero_statements(
     ]
 
 
-def write_sql_file(statements: list[str], path: Union[str, Path]) -> None:
+# Recompute do estoque de todos os itens, rodado antes e depois dos ajustes.
+# A data antiga força o recálculo desde o início do KARDEX. O bloco é PSQL
+# (FOR SELECT ... DO), então precisa de EXECUTE BLOCK + SET TERM para rodar num
+# script (isql/IBExpert).
+RECOMPUTA_DATA = "01.01.0100 00:00:00"
+
+
+def _bloco_recomputa() -> str:
+    return (
+        "SET TERM ^ ;\n"
+        "EXECUTE BLOCK AS\n"
+        "  DECLARE VARIABLE PRODUTOS_ID INTEGER;\n"
+        "BEGIN\n"
+        "  FOR\n"
+        "    SELECT P.PRODUTOS_ID FROM PRODUTOS P INTO :PRODUTOS_ID\n"
+        "  DO\n"
+        "  BEGIN\n"
+        "    /* PROCEDIMENTO PARA RECOMPUTAR ESTOQUE */\n"
+        f"    EXECUTE PROCEDURE KARDEX_RECOMPUTA(:PRODUTOS_ID, '{RECOMPUTA_DATA}');\n"
+        "  END\n"
+        "END^\n"
+        "SET TERM ; ^"
+    )
+
+
+def build_script(statements: list[str], com_recomputa: bool = True) -> str:
+    """Monta o script final: recompute de todos os itens antes, os lançamentos,
+    e recompute de novo depois."""
+    partes: list[str] = []
+    if com_recomputa:
+        partes.append(_bloco_recomputa())
+        partes.append("")
+    partes.extend(statements)
+    if com_recomputa:
+        partes.append("")
+        partes.append(_bloco_recomputa())
+    return "\n".join(partes) + "\n"
+
+
+def write_sql_file(
+    statements: list[str], path: Union[str, Path], com_recomputa: bool = True
+) -> None:
     path = Path(path)
-    content = "\n".join(statements)
-    if statements:
-        content += "\n"
-    path.write_text(content, encoding="utf-8")
+    path.write_text(build_script(statements, com_recomputa), encoding="utf-8")
