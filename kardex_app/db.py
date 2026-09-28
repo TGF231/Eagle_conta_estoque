@@ -14,6 +14,8 @@ testável sem um Firebird de verdade.
 """
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
@@ -50,6 +52,16 @@ class VerificacaoResultado:
         return len(self.em_produtos) + len(self.em_referencias)
 
 
+def _fbclient_embutido() -> Optional[str]:
+    """Caminho da fbclient.dll embutida no executável (PyInstaller), se houver.
+    Rodando do código-fonte devolve None e o fdb usa a busca padrão do sistema."""
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return None
+    caminho = os.path.join(base, "fbclient.dll")
+    return caminho if os.path.exists(caminho) else None
+
+
 def conectar(config: ConexaoConfig):
     """Abre a conexão Firebird. Importa `fdb` de forma tardia para o app rodar
     sem o driver quando a verificação não é usada."""
@@ -60,6 +72,15 @@ def conectar(config: ConexaoConfig):
             "O driver 'fdb' não está instalado. Instale com: pip install fdb "
             "(requer também a biblioteca cliente do Firebird, fbclient)."
         ) from exc
+
+    # No executável empacotado, aponta o fdb para a fbclient.dll embutida —
+    # senão ele dependeria de um Firebird instalado na máquina.
+    dll = _fbclient_embutido()
+    if dll:
+        try:
+            fdb.load_api(dll)
+        except Exception:
+            pass  # se falhar, o fdb cai na busca padrão
 
     if not config.database.strip():
         raise DBError("Informe o caminho (ou alias) do banco de dados.")
