@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from .db import CHARSETS, ConexaoConfig, DBError, conectar, verificar_codigos
@@ -74,7 +76,15 @@ class VerificacaoDialog(QDialog):
 
         self.db_edit = QLineEdit(self._config.database)
         self.db_edit.setPlaceholderText(r"C:\caminho\BANCO.FDB ou alias")
-        form.addRow("Banco (arquivo/alias):", self.db_edit)
+        db_row = QWidget()
+        db_lay = QHBoxLayout(db_row)
+        db_lay.setContentsMargins(0, 0, 0, 0)
+        db_lay.setSpacing(6)
+        db_lay.addWidget(self.db_edit, 1)
+        db_btn = QPushButton("Selecionar…")
+        db_btn.clicked.connect(self._selecionar_banco)
+        db_lay.addWidget(db_btn)
+        form.addRow("Banco (arquivo/alias):", db_row)
 
         self.user_edit = QLineEdit(self._config.user)
         form.addRow("Usuário:", self.user_edit)
@@ -112,6 +122,16 @@ class VerificacaoDialog(QDialog):
         self.status = QLabel("")
         self.status.setWordWrap(True)
         raiz.addWidget(self.status)
+
+    def _selecionar_banco(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Selecione o banco de dados Firebird",
+            "",
+            "Banco Firebird (*.fdb *.gdb *.ib);;Todos os arquivos (*)",
+        )
+        if path:
+            self.db_edit.setText(path)
 
     def _set_status(self, texto: str, role: str) -> None:
         self.status.setProperty("role", role)

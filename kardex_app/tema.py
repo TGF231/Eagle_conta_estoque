@@ -215,6 +215,29 @@ QDateEdit::down-arrow, QTimeEdit::down-arrow {{
     image: url("{seta_baixo}"); width: 12px; height: 12px;
 }}
 
+QSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 18px;
+    border-left: 1px solid {p.border_2};
+    border-top-right-radius: 4px;
+    background: {p.surface_2};
+}}
+QSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 18px;
+    border-left: 1px solid {p.border_2};
+    border-bottom-right-radius: 4px;
+    background: {p.surface_2};
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: {p.border}; }}
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {{
+    background: {p.accent_soft};
+}}
+QSpinBox::up-arrow {{ image: url("{seta_cima}"); width: 12px; height: 12px; }}
+QSpinBox::down-arrow {{ image: url("{seta_baixo}"); width: 12px; height: 12px; }}
+
 QCalendarWidget QWidget {{ alternate-background-color: {p.surface_2}; }}
 QCalendarWidget QAbstractItemView:enabled {{
     background: {p.surface};
