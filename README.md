@@ -15,11 +15,11 @@ tabela `KARDEX` e, pela própria procedure, reflete o efeito no apuramento de CM
 
 ## Instalação 
 
-### Uso Padrão ↓
+### Execução Padrão ↓
 
- - Faça o download da última versão na aba de Releases e execute o sistema pronto
+ - Faça o download da última versão na aba de Releases e rode o executável (Sem instalação nem configuração necessários.)
 
-### Uso de desenvolvimento ↓ 
+### Execução de desenvolvimento ↓ 
 
 ```bash
 python -m venv .venv
@@ -29,10 +29,14 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-#### Uso
+# Como Usar
 
 ```bash
 python main.py
+```
+OU
+```
+Eagle_Contagem_de_Estoque.exe
 ```
 
 Na janela:
