@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from .core import RECOMPUTA_DATA, generate_recompute_statements
 from .db import ConexaoConfig
 
 FB_BIN_CANDIDATES = [
@@ -51,18 +50,15 @@ def _lotes(seq: list, n: int) -> Iterable[list]:
 
 
 def montar_partes(
-    recompute_ids: list[int],
-    lancamento_statements: list[str],
-    lote: int = LOTE,
+    lancamento_statements: list[str], lote: int = LOTE
 ) -> list[str]:
-    """Monta o corpo de cada parte: recompute (antes), lançamentos, recompute
-    (depois), cada lote com COMMIT ao final. Devolve a lista de conteúdos."""
-    rec = generate_recompute_statements(recompute_ids, RECOMPUTA_DATA)
+    """Divide os lançamentos em lotes; cada parte termina com COMMIT. A própria
+    KARDEX_ALTERA_QUANTIDADE já recomputa o estoque de cada produto, então não há
+    bloco de recompute."""
     partes: list[str] = []
-    for grupo in (rec, lancamento_statements, rec):
-        for lote_stmts in _lotes(grupo, lote):
-            if lote_stmts:
-                partes.append("\n".join(lote_stmts) + "\nCOMMIT;\n")
+    for lote_stmts in _lotes(lancamento_statements, lote):
+        if lote_stmts:
+            partes.append("\n".join(lote_stmts) + "\nCOMMIT;\n")
     return partes
 
 
@@ -165,7 +161,6 @@ def build_ps1(cfg: ConexaoConfig) -> str:
 def write_package(
     pasta: str,
     cfg: ConexaoConfig,
-    recompute_ids: list[int],
     lancamento_statements: list[str],
     lote: int = LOTE,
 ) -> str:
@@ -179,7 +174,7 @@ def write_package(
         antigo.unlink()
 
     enc = encoding_para(cfg.charset)
-    partes = montar_partes(recompute_ids, lancamento_statements, lote)
+    partes = montar_partes(lancamento_statements, lote)
     for i, corpo in enumerate(partes, start=1):
         (pasta_path / f"parte_{i:04d}.sql").write_text(
             corpo, encoding=enc, errors="replace"

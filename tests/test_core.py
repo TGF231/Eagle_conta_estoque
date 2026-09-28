@@ -117,49 +117,25 @@ def test_aggregate_rows_sem_duplicados_mantem_tudo():
     assert [(r.produtos_id, r.quantidade) for r in agg] == [(1, 10.0), (2, 20.0)]
 
 
-def test_build_script_envolve_com_recomputa_antes_e_depois():
-    from kardex_app.core import RECOMPUTA_DATA, build_script
-
-    stmts = ["EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'X', 5, '2026-01-01 00:00:00');"]
-    script = build_script(stmts)
-    # dois blocos de recompute (antes e depois)
-    assert script.count("KARDEX_RECOMPUTA(:PRODUTOS_ID") == 2
-    assert script.count("EXECUTE BLOCK") == 2
-    assert RECOMPUTA_DATA in script
-    # o lançamento fica entre os dois recomputes
-    i1 = script.find("KARDEX_RECOMPUTA")
-    ialt = script.find("KARDEX_ALTERA_QUANTIDADE")
-    i2 = script.rfind("KARDEX_RECOMPUTA")
-    assert i1 < ialt < i2
-    # terminadores para o EXECUTE BLOCK rodar em isql/IBExpert
-    assert "SET TERM ^ ;" in script and "SET TERM ; ^" in script
-    # três COMMIT: após o 1º recompute, após os lançamentos, após o 2º recompute
-    assert script.count("COMMIT;") == 3
-    linhas = [l.strip() for l in script.splitlines() if l.strip()]
-    # o lançamento fica cercado por COMMIT antes (do 1º recompute) e depois
-    idx_alt = linhas.index(stmts[0])
-    assert linhas[idx_alt - 1] == "COMMIT;"
-    assert linhas[idx_alt + 1] == "COMMIT;"
-    # e o script termina com COMMIT após o último recompute
-    assert linhas[-1] == "COMMIT;"
-
-
-def test_build_script_sem_recomputa():
+def test_build_script_sem_recompute_so_lancamentos():
     from kardex_app.core import build_script
 
     stmts = ["EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'X', 5, 'd');"]
-    script = build_script(stmts, com_recomputa=False)
+    script = build_script(stmts)
+    # a própria procedure recomputa: não há bloco de recompute nem EXECUTE BLOCK
     assert "KARDEX_RECOMPUTA" not in script
-    assert script.strip() == stmts[0]
+    assert "EXECUTE BLOCK" not in script
+    linhas = [l for l in script.splitlines() if l]
+    assert linhas == [stmts[0], "COMMIT;"]
 
 
 def test_build_script_commit_a_cada_x():
     from kardex_app.core import build_script
 
     stmts = [f"EXECUTE PROCEDURE K({i});" for i in range(1, 6)]  # 5 statements
-    script = build_script(stmts, com_recomputa=False, commit_interval=2)
-    # COMMIT após o 2º e o 4º (não após o 5º, que é o último)
+    script = build_script(stmts, commit_interval=2)
     linhas = [l for l in script.splitlines() if l]
+    # COMMIT após o 2º e o 4º (intermediários) + COMMIT final
     assert linhas == [
         "EXECUTE PROCEDURE K(1);",
         "EXECUTE PROCEDURE K(2);",
@@ -168,15 +144,24 @@ def test_build_script_commit_a_cada_x():
         "EXECUTE PROCEDURE K(4);",
         "COMMIT;",
         "EXECUTE PROCEDURE K(5);",
+        "COMMIT;",
     ]
 
 
-def test_build_script_commit_zero_sem_intermediarios():
+def test_build_script_commit_zero_so_final():
     from kardex_app.core import build_script
 
     stmts = [f"EXECUTE PROCEDURE K({i});" for i in range(1, 4)]
-    script = build_script(stmts, com_recomputa=False, commit_interval=0)
-    assert "COMMIT;" not in script
+    script = build_script(stmts, commit_interval=0)
+    # só o COMMIT final
+    assert script.count("COMMIT;") == 1
+    assert script.splitlines()[-1] == "COMMIT;"
+
+
+def test_build_script_vazio():
+    from kardex_app.core import build_script
+
+    assert build_script([]) == ""
 
 
 def test_generate_zero_statements():

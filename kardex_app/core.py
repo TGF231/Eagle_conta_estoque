@@ -27,10 +27,6 @@ HISTORICO_MAX_LEN = 200
 QUANTIDADE_PRECISION = 14
 QUANTIDADE_SCALE = 5
 
-# Recompute do estoque, rodado antes e depois dos ajustes. A data antiga força o
-# recálculo desde o início do KARDEX.
-RECOMPUTA_DATA = "01.01.0100 00:00:00"
-
 SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm", ".xls", ".csv", ".txt"}
 
 SOURCE_FILE_FILTER = (
@@ -389,17 +385,6 @@ def generate_sql_statements(
     return statements
 
 
-def generate_recompute_statements(
-    produtos_ids: Iterable[int], date_str: str = RECOMPUTA_DATA
-) -> list[str]:
-    """Um KARDEX_RECOMPUTA por produto (statements simples, sem EXECUTE BLOCK) —
-    usado no pacote com progresso, em que cada lote é executado à parte."""
-    return [
-        f"EXECUTE PROCEDURE KARDEX_RECOMPUTA({int(pid)}, '{date_str}');"
-        for pid in produtos_ids
-    ]
-
-
 def generate_zero_statements(
     produtos_ids: Iterable[int], history: str, date_str: str
 ) -> list[str]:
@@ -411,24 +396,6 @@ def generate_zero_statements(
         f"{int(pid)}, '{escaped_history}', 0, '{date_str}');"
         for pid in produtos_ids
     ]
-
-
-def _bloco_recomputa() -> str:
-    return (
-        "SET TERM ^ ;\n"
-        "EXECUTE BLOCK AS\n"
-        "  DECLARE VARIABLE PRODUTOS_ID INTEGER;\n"
-        "BEGIN\n"
-        "  FOR\n"
-        "    SELECT P.PRODUTOS_ID FROM PRODUTOS P INTO :PRODUTOS_ID\n"
-        "  DO\n"
-        "  BEGIN\n"
-        "    /* PROCEDIMENTO PARA RECOMPUTAR ESTOQUE */\n"
-        f"    EXECUTE PROCEDURE KARDEX_RECOMPUTA(:PRODUTOS_ID, '{RECOMPUTA_DATA}');\n"
-        "  END\n"
-        "END^\n"
-        "SET TERM ; ^"
-    )
 
 
 def _com_commits(statements: list[str], intervalo: int) -> list[str]:
@@ -445,44 +412,19 @@ def _com_commits(statements: list[str], intervalo: int) -> list[str]:
     return saida
 
 
-def build_script(
-    statements: list[str], com_recomputa: bool = True, commit_interval: int = 0
-) -> str:
-    """Monta o script final. Com recompute:
-
-        recompute (todos os itens)
-        COMMIT;
-        <lançamentos, com COMMIT a cada commit_interval registros>
-        COMMIT;
-        recompute (todos os itens)
-        COMMIT;
-
-    Cada recompute é um statement próprio, com COMMIT após o primeiro, antes do
-    segundo (após os lançamentos) e depois do segundo."""
-    lancamentos = _com_commits(statements, commit_interval)
-    if not com_recomputa:
-        return "\n".join(lancamentos) + "\n"
-
-    partes: list[str] = [
-        _bloco_recomputa(),
-        "COMMIT;",
-        "",
-    ]
-    partes.extend(lancamentos)
-    partes.extend(
-        [
-            "",
-            "COMMIT;",
-            "",
-            _bloco_recomputa(),
-            "COMMIT;",
-        ]
-    )
-    return "\n".join(partes) + "\n"
+def build_script(statements: list[str], commit_interval: int = 0) -> str:
+    """Monta o script final: só os lançamentos (a própria KARDEX_ALTERA_QUANTIDADE
+    já recomputa o estoque de cada produto), com COMMIT a cada `commit_interval`
+    registros e um COMMIT final."""
+    if not statements:
+        return ""
+    linhas = _com_commits(statements, commit_interval)
+    linhas.append("COMMIT;")
+    return "\n".join(linhas) + "\n"
 
 
 def write_sql_file(
-    statements: list[str], path: Union[str, Path], com_recomputa: bool = True
+    statements: list[str], path: Union[str, Path], commit_interval: int = 0
 ) -> None:
     path = Path(path)
-    path.write_text(build_script(statements, com_recomputa), encoding="utf-8")
+    path.write_text(build_script(statements, commit_interval), encoding="utf-8")

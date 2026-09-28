@@ -40,27 +40,24 @@ def test_encoding_para():
     assert encoding_para("qualquer") == "cp1252"
 
 
-def test_montar_partes_recompute_antes_e_depois_com_lotes():
-    rec_ids = [1, 2, 3, 4, 5]
-    lanc = ["EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'X', 5, 'd');"]
-    partes = montar_partes(rec_ids, lanc, lote=2)
-    # recompute (5 ids / 2 = 3 lotes) + lançamentos (1 lote) + recompute (3) = 7
-    assert len(partes) == 7
-    # cada parte termina com COMMIT
+def test_montar_partes_so_lancamentos_em_lotes():
+    lanc = [f"EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE({i}, 'X', 5, 'd');"
+            for i in range(1, 6)]  # 5 lançamentos
+    partes = montar_partes(lanc, lote=2)
+    # 5 / 2 = 3 lotes; sem recompute
+    assert len(partes) == 3
     assert all(p.rstrip().endswith("COMMIT;") for p in partes)
-    # a parte de lançamentos está no meio (após os 3 lotes de recompute)
-    assert "KARDEX_ALTERA_QUANTIDADE" in partes[3]
-    # primeira e última são recompute
-    assert "KARDEX_RECOMPUTA" in partes[0]
-    assert "KARDEX_RECOMPUTA" in partes[-1]
+    assert "KARDEX_RECOMPUTA" not in "".join(partes)
+    assert "KARDEX_ALTERA_QUANTIDADE" in partes[0]
 
 
 def test_write_package_cria_partes_e_scripts(tmp_path):
     pasta = tmp_path / "saida_pacote"
-    lanc = ["EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'X', 5, 'd');"]
-    write_package(str(pasta), _cfg(), [1, 2, 3], lanc, lote=2)
+    lanc = [f"EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE({i}, 'X', 5, 'd');"
+            for i in range(1, 6)]
+    write_package(str(pasta), _cfg(), lanc, lote=2)
     partes = sorted(pasta.glob("parte_*.sql"))
-    assert len(partes) >= 3
+    assert len(partes) == 3
     assert partes[0].name == "parte_0001.sql"
     assert (pasta / "executar.bat").exists()
     assert (pasta / "executar.ps1").exists()
@@ -70,5 +67,5 @@ def test_write_package_limpa_partes_antigas(tmp_path):
     pasta = tmp_path / "p"
     pasta.mkdir()
     (pasta / "parte_9999.sql").write_text("lixo antigo", encoding="cp1252")
-    write_package(str(pasta), _cfg(), [1], ["EXECUTE PROCEDURE X(1);"], lote=10)
+    write_package(str(pasta), _cfg(), ["EXECUTE PROCEDURE X(1);"], lote=10)
     assert not (pasta / "parte_9999.sql").exists()

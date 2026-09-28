@@ -121,7 +121,7 @@ reconciliação total: o que não foi contado é tratado como estoque zero.
 
 A conexão informada na tela **Verificar no banco…** é reaproveitada — se você já
 verificou os códigos, o banco não é pedido de novo. Os lançamentos de zeramento
-entram depois da contagem, ainda entre os dois recomputes.
+entram depois da contagem.
 
 ## Formato do arquivo de contagem
 
@@ -153,14 +153,9 @@ EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(2, 'AJUSTE DE ESTOQUE', 5.5, '2026-09
 ```
 
 A data usa o formato ISO (`YYYY-MM-DD HH:MM:SS`), interpretado pelo Firebird
-independentemente do idioma da conexão.
-
-O script gerado ainda **recomputa o estoque de todos os itens antes e depois**
-dos lançamentos, com um `EXECUTE BLOCK` que percorre `PRODUTOS` e chama
-`KARDEX_RECOMPUTA`. Por isso o `.sql` usa `SET TERM ^` em volta dos blocos (é
-PSQL e precisa disso para rodar em isql/IBExpert). Há um `COMMIT;` após o
-primeiro recompute, outro após os lançamentos (antes do segundo recompute) e um
-último após o segundo recompute. Os lançamentos saem ordenados por código.
+independentemente do idioma da conexão. Os lançamentos saem ordenados por
+código. Não há bloco de recompute separado: a própria `KARDEX_ALTERA_QUANTIDADE`
+recomputa o estoque do produto ao final.
 
 ## Pacote executável (isql)
 

@@ -504,9 +504,7 @@ class KardexWindow(QWidget):
         base = Path(sql_path).with_suffix("")
         pasta = f"{base}_pacote"
         try:
-            caminho = write_package(
-                pasta, self._db_config, produtos, lancamentos, lote=lote
-            )
+            caminho = write_package(pasta, self._db_config, lancamentos, lote=lote)
         except OSError as exc:
             QMessageBox.critical(self, "Erro ao gerar pacote", str(exc))
             return None
