@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QTime
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -39,13 +40,28 @@ from .core import (
 from .mapeamento import MapeamentoDialog
 from .verificacao import VerificacaoDialog
 
-APP_TITULO = "Importa KARDEX"
+APP_TITULO = "Eagle Contagem de Estoque"
+
+
+def recurso(nome: str) -> str:
+    """Caminho de um recurso, funcionando tanto no código-fonte quanto no
+    executável empacotado pelo PyInstaller (sys._MEIPASS)."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return str(Path(base) / "assets" / nome)
+    return str(Path(__file__).resolve().parent.parent / "assets" / nome)
+
+
+def app_icon() -> QIcon:
+    caminho = recurso("eagle.ico")
+    return QIcon(caminho) if Path(caminho).exists() else QIcon()
 
 
 class KardexWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITULO)
+        self.setWindowIcon(app_icon())
         self.resize(760, 640)
         self._df = None
         self._id_col = None
@@ -378,6 +394,7 @@ class KardexWindow(QWidget):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITULO)
+    app.setWindowIcon(app_icon())
     tema.definir_escuro(False)
     app.setStyleSheet(tema.folha_estilo())
     window = KardexWindow()
