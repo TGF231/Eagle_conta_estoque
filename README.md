@@ -68,6 +68,10 @@ loja ou por setor) e gerar **um único** script SQL com tudo. Regras:
 - Todos precisam ter o **mesmo número de colunas**; se algum divergir, a
   importação para e aponta qual arquivo está fora do padrão.
 - O mapeamento de colunas é feito **uma vez**, sobre o conjunto unificado.
+- **Códigos repetidos são somados**: o mesmo produto aparecendo em arquivos (ou
+  linhas) diferentes vira um único lançamento com a soma das quantidades. Como o
+  código é tratado como inteiro, zeros à esquerda não separam (`007` e `7` somam
+  no produto `7`).
 
 ## Verificação/mapeamento de colunas
 
@@ -106,6 +110,15 @@ a lista dos não encontrados. Notas:
 - A senha é usada apenas na sessão, não é gravada em disco.
 - O driver `fdb` é carregado sob demanda; sem ele (ou sem a `fbclient`), a
   verificação exibe uma mensagem clara e o resto do app continua funcionando.
+
+### Zerar itens não contados
+
+Ao final da verificação, se houver **produtos ativos** no banco (`PRODUTO_INATIVO
+= 0`) que **não** apareceram na contagem, o app pergunta se você quer gerar um
+script que **zera o estoque** desses itens — um `EXECUTE PROCEDURE
+KARDEX_ALTERA_QUANTIDADE(..., 0, ...)` por produto, usando o mesmo histórico e
+data/hora do lançamento. Útil para reconciliação total: o que não foi contado é
+tratado como estoque zero. O script é salvo num `.sql` separado.
 
 ## Formato do arquivo de contagem
 

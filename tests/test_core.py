@@ -4,6 +4,7 @@ import pytest
 from kardex_app.core import (
     COLUNA_ARQUIVO,
     FileImportError,
+    aggregate_rows,
     build_date_str,
     colunas_visiveis,
     escape_sql_text,
@@ -93,6 +94,45 @@ def test_generate_sql_statements_escapes_history():
 
 def test_build_date_str():
     assert build_date_str("2026-09-28", "10:00:00") == "2026-09-28 10:00:00"
+
+
+def test_aggregate_rows_soma_codigos_iguais_com_zeros_a_esquerda():
+    # "007", "7" e "0007" caem no id 7 → somam; ordem de 1ª aparição preservada
+    df = pd.DataFrame(
+        [["007", 10], ["3", 2], ["7", 5], ["0007", 1], ["3", 8]],
+        columns=["PRODUTOS_ID", "PRODUTO_NOVA_QUANTIDADE"],
+    )
+    result = validate_rows(df)
+    agg = aggregate_rows(result.valid_rows)
+    assert [(r.produtos_id, r.quantidade) for r in agg] == [(7, 16.0), (3, 10.0)]
+
+
+def test_aggregate_rows_sem_duplicados_mantem_tudo():
+    df = pd.DataFrame(
+        [[1, 10], [2, 20]],
+        columns=["PRODUTOS_ID", "PRODUTO_NOVA_QUANTIDADE"],
+    )
+    result = validate_rows(df)
+    agg = aggregate_rows(result.valid_rows)
+    assert [(r.produtos_id, r.quantidade) for r in agg] == [(1, 10.0), (2, 20.0)]
+
+
+def test_generate_zero_statements():
+    from kardex_app.core import generate_zero_statements
+
+    stmts = generate_zero_statements([10, 22], "ajuste", "2026-09-28 10:00:00")
+    assert stmts == [
+        "EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(10, 'AJUSTE', 0, '2026-09-28 10:00:00');",
+        "EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(22, 'AJUSTE', 0, '2026-09-28 10:00:00');",
+    ]
+
+
+def test_generate_zero_statements_escapes_history():
+    from kardex_app.core import generate_zero_statements
+
+    stmts = generate_zero_statements([1], "O'Brien", "2026-09-28 10:00:00")
+    assert "'O''BRIEN'" in stmts[0]
+    assert ", 0, " in stmts[0]
 
 
 def test_read_table_csv(tmp_path):

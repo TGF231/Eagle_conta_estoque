@@ -109,6 +109,17 @@ def conectar(config: ConexaoConfig):
         raise DBError(f"Não foi possível conectar: {exc}") from exc
 
 
+def listar_produtos_ativos(conn) -> set[int]:
+    """Todos os PRODUTOS_ID ativos (PRODUTO_INATIVO = 0). Base para zerar o
+    estoque dos itens que não vieram na contagem."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT PRODUTOS_ID FROM PRODUTOS WHERE PRODUTO_INATIVO = 0")
+        return {int(r[0]) for r in cur.fetchall()}
+    except Exception as exc:
+        raise DBError(f"Falha ao listar produtos ativos: {exc}") from exc
+
+
 def _lotes(seq: list, tamanho: int) -> Iterable[list]:
     for i in range(0, len(seq), tamanho):
         yield seq[i : i + tamanho]

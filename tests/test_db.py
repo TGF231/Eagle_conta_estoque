@@ -2,27 +2,28 @@
 conexão no padrão DB-API — sem Firebird de verdade."""
 import pytest
 
-from kardex_app.db import DBError, verificar_codigos
+from kardex_app.db import DBError, listar_produtos_ativos, verificar_codigos
 
 
 class FakeCursor:
-    def __init__(self, produtos, referencias):
+    def __init__(self, produtos, referencias, ativos=None):
         self._produtos = set(produtos)  # ints existentes em PRODUTOS
         self._referencias = dict(referencias)  # ref(str) -> produtos_id(int)
+        self._ativos = set(ativos) if ativos is not None else set(produtos)
         self._resultado = []
 
-    def execute(self, sql, params):
-        if "FROM PRODUTOS " in sql or sql.strip().startswith(
-            "SELECT PRODUTOS_ID FROM PRODUTOS"
-        ):
-            self._resultado = [
-                (int(p),) for p in params if int(p) in self._produtos
-            ]
+    def execute(self, sql, params=None):
+        if "PRODUTO_INATIVO" in sql:
+            self._resultado = [(p,) for p in sorted(self._ativos)]
         elif "PRODUTOSREFERENCIAS" in sql:
             self._resultado = [
                 (ref, self._referencias[ref])
-                for ref in params
+                for ref in (params or [])
                 if ref in self._referencias
+            ]
+        elif "FROM PRODUTOS" in sql:
+            self._resultado = [
+                (int(p),) for p in (params or []) if int(p) in self._produtos
             ]
         else:
             self._resultado = []
@@ -32,15 +33,15 @@ class FakeCursor:
 
 
 class FakeConn:
-    def __init__(self, produtos, referencias):
-        self._cur = FakeCursor(produtos, referencias)
+    def __init__(self, produtos, referencias, ativos=None):
+        self._cur = FakeCursor(produtos, referencias, ativos)
 
     def cursor(self):
         return self._cur
 
 
 class ExplodingCursor:
-    def execute(self, sql, params):
+    def execute(self, sql, params=None):
         raise RuntimeError("boom")
 
     def fetchall(self):
@@ -111,3 +112,13 @@ def test_lista_vazia():
 def test_erro_de_consulta_vira_dberror():
     with pytest.raises(DBError):
         verificar_codigos(ExplodingConn(), ["1"])
+
+
+def test_listar_produtos_ativos():
+    conn = FakeConn(produtos={1, 2, 3}, referencias={}, ativos={1, 3})
+    assert listar_produtos_ativos(conn) == {1, 3}
+
+
+def test_listar_produtos_ativos_erro_vira_dberror():
+    with pytest.raises(DBError):
+        listar_produtos_ativos(ExplodingConn())

@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
+from typing import Iterable, Optional, Union
 
 import pandas as pd
 
@@ -354,6 +354,22 @@ def build_date_str(date_str: str, time_str: str) -> str:
     return f"{date_str} {time_str}"
 
 
+def aggregate_rows(rows: list[ParsedRow]) -> list[ParsedRow]:
+    """Une linhas do mesmo produto somando a quantidade.
+
+    Como `produtos_id` já é inteiro, códigos com zeros à esquerda (``007``) caem
+    no mesmo id de ``7`` e são somados juntos. A ordem de primeira aparição é
+    preservada."""
+    soma: dict[int, float] = {}
+    ordem: list[int] = []
+    for r in rows:
+        if r.produtos_id not in soma:
+            soma[r.produtos_id] = 0.0
+            ordem.append(r.produtos_id)
+        soma[r.produtos_id] += r.quantidade
+    return [ParsedRow(0, pid, soma[pid]) for pid in ordem]
+
+
 def generate_sql_statements(
     rows: list[ParsedRow], history: str, date_str: str
 ) -> list[str]:
@@ -367,6 +383,19 @@ def generate_sql_statements(
             f"'{date_str}');"
         )
     return statements
+
+
+def generate_zero_statements(
+    produtos_ids: Iterable[int], history: str, date_str: str
+) -> list[str]:
+    """Gera lançamentos com quantidade 0 para os produtos informados — usado
+    para zerar o estoque de itens que não apareceram na contagem."""
+    escaped_history = escape_sql_text(history.strip().upper())
+    return [
+        "EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE("
+        f"{int(pid)}, '{escaped_history}', 0, '{date_str}');"
+        for pid in produtos_ids
+    ]
 
 
 def write_sql_file(statements: list[str], path: Union[str, Path]) -> None:

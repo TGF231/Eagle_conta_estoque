@@ -30,6 +30,7 @@ from .core import (
     HISTORICO_MAX_LEN,
     SOURCE_FILE_FILTER,
     FileImportError,
+    aggregate_rows,
     build_date_str,
     generate_sql_statements,
     read_many,
@@ -294,7 +295,14 @@ class KardexWindow(QWidget):
                 self, "Sem códigos", "Não há códigos para verificar."
             )
             return
-        dialog = VerificacaoDialog(codigos, self, self._db_config, origem=origem)
+        dialog = VerificacaoDialog(
+            codigos,
+            self,
+            self._db_config,
+            origem=origem,
+            history=self.history_edit.text() or "AJUSTE DE ESTOQUE",
+            date_str=self._build_date_str(),
+        )
         dialog.exec()
         # guarda a config para reaproveitar na próxima abertura (sem a senha
         # persistir em disco — fica só em memória nesta sessão)
@@ -382,7 +390,9 @@ class KardexWindow(QWidget):
             return
 
         date_str = self._build_date_str()
-        statements = generate_sql_statements(result.valid_rows, history, date_str)
+        # une códigos iguais (inclusive com zeros à esquerda) somando quantidade
+        agregadas = aggregate_rows(result.valid_rows)
+        statements = generate_sql_statements(agregadas, history, date_str)
 
         try:
             write_sql_file(statements, sql_path)
@@ -391,7 +401,10 @@ class KardexWindow(QWidget):
             self._set_status("Falha ao salvar o arquivo SQL.", role="erro")
             return
 
-        msg = f"SQL gerado com sucesso: {len(statements)} lançamento(s)."
+        msg = f"SQL gerado com sucesso: {len(statements)} produto(s)."
+        unidas = len(result.valid_rows) - len(agregadas)
+        if unidas > 0:
+            msg += f" {unidas} linha(s) unida(s) por código repetido."
         if result.issues:
             msg += f" {len(result.issues)} linha(s) ignorada(s)."
         self._set_status(msg, role="ok")

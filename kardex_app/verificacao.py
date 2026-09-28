@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -20,7 +21,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .db import CHARSETS, ConexaoConfig, DBError, conectar, verificar_codigos
+from .core import generate_zero_statements, write_sql_file
+from .db import (
+    CHARSETS,
+    ConexaoConfig,
+    DBError,
+    conectar,
+    listar_produtos_ativos,
+    verificar_codigos,
+)
 
 
 class VerificacaoDialog(QDialog):
@@ -30,6 +39,8 @@ class VerificacaoDialog(QDialog):
         parent=None,
         config: ConexaoConfig | None = None,
         origem: dict | None = None,
+        history: str = "AJUSTE DE ESTOQUE",
+        date_str: str = "",
     ):
         super().__init__(parent)
         self.setWindowTitle("Verificar códigos no banco (Firebird 2.5)")
@@ -37,6 +48,8 @@ class VerificacaoDialog(QDialog):
         self._codigos = list(codigos)
         self._config = config or ConexaoConfig()
         self._origem = origem or {}
+        self._history = history
+        self._date_str = date_str
         self._build_ui()
 
     def config(self) -> ConexaoConfig:
@@ -154,6 +167,7 @@ class VerificacaoDialog(QDialog):
         try:
             conn = conectar(self.config())
             resultado = verificar_codigos(conn, self._codigos)
+            ativos = listar_produtos_ativos(conn)
         except DBError as exc:
             self._set_status(str(exc), role="erro")
             self.verificar_btn.setEnabled(True)
@@ -167,6 +181,49 @@ class VerificacaoDialog(QDialog):
 
         self.verificar_btn.setEnabled(True)
         self._mostrar(resultado)
+
+        # produtos ativos cobertos pela contagem (id direto + referência resolvida)
+        cobertos = {int(v) for v in resultado.em_produtos if v.lstrip("-").isdigit()}
+        cobertos |= set(resultado.em_referencias.values())
+        nao_contados = sorted(ativos - cobertos)
+        self._oferecer_zeramento(nao_contados)
+
+    def _oferecer_zeramento(self, nao_contados) -> None:
+        if not nao_contados:
+            return
+        resp = QMessageBox.question(
+            self,
+            "Zerar itens não contados",
+            f"{len(nao_contados)} produto(s) ativo(s) do banco não estão na "
+            "contagem.\n\nDeseja gerar um script que zera o estoque desses "
+            "itens (quantidade 0)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salvar SQL de zeramento", "", "SQL (*.sql);;Todos os arquivos (*)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".sql"):
+            path += ".sql"
+
+        statements = generate_zero_statements(
+            nao_contados, self._history, self._date_str
+        )
+        try:
+            write_sql_file(statements, path)
+        except OSError as exc:
+            QMessageBox.critical(self, "Erro ao salvar", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Zeramento gerado",
+            f"{len(statements)} lançamento(s) de zeramento salvos em:\n{path}",
+        )
 
     def _mostrar(self, r) -> None:
         linhas = [
