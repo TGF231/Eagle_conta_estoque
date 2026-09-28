@@ -162,6 +162,19 @@ PSQL e precisa disso para rodar em isql/IBExpert). Há um `COMMIT;` após o
 primeiro recompute, outro após os lançamentos (antes do segundo recompute) e um
 último após o segundo recompute. Os lançamentos saem ordenados por código.
 
+## Pacote executável (isql)
+
+Marque **Gerar pacote .bat/.ps1 para rodar direto no isql** para, além do `.sql`,
+criar uma pasta `<nome>_pacote/` ao lado dele com:
+
+- `script.sql` — o SQL gerado (na codificação do charset da conexão);
+- `executar.bat` e `executar.ps1` — autodetectam o `isql.exe` (Firebird
+  2.5/3.0/4.0/5.0), rodam o script com `-b` (para no primeiro erro), registram
+  tudo em `execucao.log` e pausam ao final.
+
+Basta dar duplo-clique no `.bat` — bem mais rápido que colar o script no
+IBExpert. A conexão informada em **Verificar no banco…** é reaproveitada.
+
 ## Desenvolvimento
 
 Instale as dependências de desenvolvimento e rode os testes:

@@ -33,15 +33,16 @@ from .core import (
     FileImportError,
     aggregate_rows,
     build_date_str,
+    build_script,
     generate_sql_statements,
     generate_zero_statements,
     read_many,
     validate_history,
     validate_rows,
-    write_sql_file,
 )
 from .db import DBError, conectar, listar_produtos_ativos
 from .mapeamento import MapeamentoDialog
+from .packager import write_package
 from .verificacao import VerificacaoDialog
 
 APP_TITULO = "Eagle Contagem de Estoque"
@@ -170,6 +171,12 @@ class KardexWindow(QWidget):
             "Zerar estoque dos itens não contados (consulta o banco ao gerar)"
         )
         raiz.addWidget(self.zerar_chk)
+
+        self.pacote_chk = QCheckBox(
+            "Gerar pacote .bat/.ps1 para rodar direto no isql (mais rápido que "
+            "o IBExpert)"
+        )
+        raiz.addWidget(self.pacote_chk)
 
         # ------------------------------------------------------------ ação
         acao = QHBoxLayout()
@@ -407,12 +414,19 @@ class KardexWindow(QWidget):
             statements = statements + zero_stmts
             zerados = len(zero_stmts)
 
+        script_content = build_script(statements)
         try:
-            write_sql_file(statements, sql_path)
+            Path(sql_path).write_text(script_content, encoding="utf-8")
         except OSError as exc:
             QMessageBox.critical(self, "Erro ao salvar SQL", str(exc))
             self._set_status("Falha ao salvar o arquivo SQL.", role="erro")
             return
+
+        pacote_dir = None
+        if self.pacote_chk.isChecked():
+            pacote_dir = self._gerar_pacote(sql_path, script_content)
+            if pacote_dir is None:
+                return  # usuário cancelou a conexão
 
         msg = f"SQL gerado com sucesso: {len(agregadas)} produto(s) contado(s)."
         unidas = len(result.valid_rows) - len(agregadas)
@@ -422,7 +436,32 @@ class KardexWindow(QWidget):
             msg += f" {zerados} item(ns) zerado(s)."
         if result.issues:
             msg += f" {len(result.issues)} linha(s) ignorada(s)."
+        if pacote_dir:
+            msg += f" Pacote .bat/.ps1 em: {pacote_dir}"
         self._set_status(msg, role="ok")
+
+    def _gerar_pacote(self, sql_path: str, script_content: str):
+        """Grava o pacote executável (script.sql + executar.bat/.ps1) numa pasta
+        ao lado do .sql. Reaproveita a conexão; só pede se não houver."""
+        if self._db_config is None or not self._db_config.database.strip():
+            dialog = ConexaoDialog(self, self._db_config)
+            if not dialog.exec():
+                QMessageBox.information(
+                    self,
+                    "Pacote cancelado",
+                    "Conexão não informada — o pacote .bat/.ps1 não foi gerado. "
+                    "O arquivo .sql foi salvo normalmente.",
+                )
+                return None
+            self._db_config = dialog.config()
+
+        base = Path(sql_path).with_suffix("")
+        pasta = f"{base}_pacote"
+        try:
+            return write_package(pasta, script_content, self._db_config)
+        except OSError as exc:
+            QMessageBox.critical(self, "Erro ao gerar pacote", str(exc))
+            return None
 
     def _statements_zeramento(self, agregadas, history, date_str):
         """Consulta o banco e devolve os lançamentos-zero para os produtos
