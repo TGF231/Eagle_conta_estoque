@@ -133,6 +133,15 @@ def test_build_script_envolve_com_recomputa_antes_e_depois():
     assert i1 < ialt < i2
     # terminadores para o EXECUTE BLOCK rodar em isql/IBExpert
     assert "SET TERM ^ ;" in script and "SET TERM ; ^" in script
+    # três COMMIT: após o 1º recompute, após os lançamentos, após o 2º recompute
+    assert script.count("COMMIT;") == 3
+    linhas = [l.strip() for l in script.splitlines() if l.strip()]
+    # o lançamento fica cercado por COMMIT antes (do 1º recompute) e depois
+    idx_alt = linhas.index(stmts[0])
+    assert linhas[idx_alt - 1] == "COMMIT;"
+    assert linhas[idx_alt + 1] == "COMMIT;"
+    # e o script termina com COMMIT após o último recompute
+    assert linhas[-1] == "COMMIT;"
 
 
 def test_build_script_sem_recomputa():

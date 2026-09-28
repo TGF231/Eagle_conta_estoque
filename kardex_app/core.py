@@ -424,16 +424,35 @@ def _bloco_recomputa() -> str:
 
 
 def build_script(statements: list[str], com_recomputa: bool = True) -> str:
-    """Monta o script final: recompute de todos os itens antes, os lançamentos,
-    e recompute de novo depois."""
-    partes: list[str] = []
-    if com_recomputa:
-        partes.append(_bloco_recomputa())
-        partes.append("")
+    """Monta o script final. Com recompute:
+
+        recompute (todos os itens)
+        COMMIT;
+        <lançamentos>
+        COMMIT;
+        recompute (todos os itens)
+        COMMIT;
+
+    Cada recompute é um statement próprio, com COMMIT após o primeiro, antes do
+    segundo (após os lançamentos) e depois do segundo."""
+    if not com_recomputa:
+        return "\n".join(statements) + "\n"
+
+    partes: list[str] = [
+        _bloco_recomputa(),
+        "COMMIT;",
+        "",
+    ]
     partes.extend(statements)
-    if com_recomputa:
-        partes.append("")
-        partes.append(_bloco_recomputa())
+    partes.extend(
+        [
+            "",
+            "COMMIT;",
+            "",
+            _bloco_recomputa(),
+            "COMMIT;",
+        ]
+    )
     return "\n".join(partes) + "\n"
 
 

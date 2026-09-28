@@ -113,12 +113,15 @@ a lista dos não encontrados. Notas:
 
 ### Zerar itens não contados
 
-Ao final da verificação, se houver **produtos ativos** no banco (`PRODUTO_INATIVO
-= 0`) que **não** apareceram na contagem, o app pergunta se você quer gerar um
-script que **zera o estoque** desses itens — um `EXECUTE PROCEDURE
-KARDEX_ALTERA_QUANTIDADE(..., 0, ...)` por produto, usando o mesmo histórico e
-data/hora do lançamento. Útil para reconciliação total: o que não foi contado é
-tratado como estoque zero. O script é salvo num `.sql` separado.
+Marque **Zerar estoque dos itens não contados** antes de gerar o SQL. Ao salvar,
+o app consulta o banco, lista os **produtos ativos** (`PRODUTO_INATIVO = 0`) que
+**não** apareceram na contagem e embute, **no mesmo `.sql`**, um `EXECUTE
+PROCEDURE KARDEX_ALTERA_QUANTIDADE(..., 0, ...)` para cada um. Útil para
+reconciliação total: o que não foi contado é tratado como estoque zero.
+
+A conexão informada na tela **Verificar no banco…** é reaproveitada — se você já
+verificou os códigos, o banco não é pedido de novo. Os lançamentos de zeramento
+entram depois da contagem, ainda entre os dois recomputes.
 
 ## Formato do arquivo de contagem
 
@@ -155,7 +158,9 @@ independentemente do idioma da conexão.
 O script gerado ainda **recomputa o estoque de todos os itens antes e depois**
 dos lançamentos, com um `EXECUTE BLOCK` que percorre `PRODUTOS` e chama
 `KARDEX_RECOMPUTA`. Por isso o `.sql` usa `SET TERM ^` em volta dos blocos (é
-PSQL e precisa disso para rodar em isql/IBExpert).
+PSQL e precisa disso para rodar em isql/IBExpert). Há um `COMMIT;` após o
+primeiro recompute, outro após os lançamentos (antes do segundo recompute) e um
+último após o segundo recompute. Os lançamentos saem ordenados por código.
 
 ## Desenvolvimento
 

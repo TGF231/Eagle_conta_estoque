@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import tema
+from .conexao import ConexaoDialog
 from .core import (
     COLUNA_ARQUIVO,
     HISTORICO_MAX_LEN,
@@ -33,11 +34,13 @@ from .core import (
     aggregate_rows,
     build_date_str,
     generate_sql_statements,
+    generate_zero_statements,
     read_many,
     validate_history,
     validate_rows,
     write_sql_file,
 )
+from .db import DBError, conectar, listar_produtos_ativos
 from .mapeamento import MapeamentoDialog
 from .verificacao import VerificacaoDialog
 
@@ -162,6 +165,11 @@ class KardexWindow(QWidget):
         self.history_edit.setMaxLength(HISTORICO_MAX_LEN)
         details_form.addRow("Texto histórico:", self.history_edit)
         raiz.addWidget(details_group)
+
+        self.zerar_chk = QCheckBox(
+            "Zerar estoque dos itens não contados (consulta o banco ao gerar)"
+        )
+        raiz.addWidget(self.zerar_chk)
 
         # ------------------------------------------------------------ ação
         acao = QHBoxLayout()
@@ -295,14 +303,7 @@ class KardexWindow(QWidget):
                 self, "Sem códigos", "Não há códigos para verificar."
             )
             return
-        dialog = VerificacaoDialog(
-            codigos,
-            self,
-            self._db_config,
-            origem=origem,
-            history=self.history_edit.text() or "AJUSTE DE ESTOQUE",
-            date_str=self._build_date_str(),
-        )
+        dialog = VerificacaoDialog(codigos, self, self._db_config, origem=origem)
         dialog.exec()
         # guarda a config para reaproveitar na próxima abertura (sem a senha
         # persistir em disco — fica só em memória nesta sessão)
@@ -390,9 +391,21 @@ class KardexWindow(QWidget):
             return
 
         date_str = self._build_date_str()
-        # une códigos iguais (inclusive com zeros à esquerda) somando quantidade
-        agregadas = aggregate_rows(result.valid_rows)
+        # une códigos iguais (inclusive com zeros à esquerda) somando a
+        # quantidade e ordena os lançamentos por código
+        agregadas = sorted(
+            aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
+        )
         statements = generate_sql_statements(agregadas, history, date_str)
+
+        # zeramento dos itens não contados, embutido no mesmo script
+        zerados = 0
+        if self.zerar_chk.isChecked():
+            zero_stmts = self._statements_zeramento(agregadas, history, date_str)
+            if zero_stmts is None:
+                return  # usuário cancelou / falha de conexão
+            statements = statements + zero_stmts
+            zerados = len(zero_stmts)
 
         try:
             write_sql_file(statements, sql_path)
@@ -401,13 +414,53 @@ class KardexWindow(QWidget):
             self._set_status("Falha ao salvar o arquivo SQL.", role="erro")
             return
 
-        msg = f"SQL gerado com sucesso: {len(statements)} produto(s)."
+        msg = f"SQL gerado com sucesso: {len(agregadas)} produto(s) contado(s)."
         unidas = len(result.valid_rows) - len(agregadas)
         if unidas > 0:
             msg += f" {unidas} linha(s) unida(s) por código repetido."
+        if zerados:
+            msg += f" {zerados} item(ns) zerado(s)."
         if result.issues:
             msg += f" {len(result.issues)} linha(s) ignorada(s)."
         self._set_status(msg, role="ok")
+
+    def _statements_zeramento(self, agregadas, history, date_str):
+        """Consulta o banco e devolve os lançamentos-zero para os produtos
+        ativos que não estão na contagem. Devolve None se o usuário cancelar a
+        conexão ou se houver erro (aborta a geração).
+
+        Reaproveita a conexão já informada na tela de verificação — só pede os
+        dados se ainda não houver conexão configurada."""
+        if self._db_config is None or not self._db_config.database.strip():
+            dialog = ConexaoDialog(self, self._db_config)
+            if not dialog.exec():
+                QMessageBox.information(
+                    self,
+                    "Zeramento cancelado",
+                    "Conexão não informada — o SQL não foi gerado. Desmarque a "
+                    "opção de zerar para gerar apenas a contagem.",
+                )
+                return None
+            self._db_config = dialog.config()
+
+        conn = None
+        try:
+            conn = conectar(self._db_config)
+            ativos = listar_produtos_ativos(conn)
+        except DBError as exc:
+            QMessageBox.critical(self, "Erro no banco", str(exc))
+            self._set_status("Falha ao consultar o banco.", role="erro")
+            return None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        contados = {r.produtos_id for r in agregadas}
+        nao_contados = sorted(ativos - contados)
+        return generate_zero_statements(nao_contados, history, date_str)
 
 
 def main() -> None:
