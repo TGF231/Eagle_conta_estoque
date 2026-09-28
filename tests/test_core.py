@@ -75,10 +75,10 @@ def test_generate_sql_statements():
     df = make_df([[1, 10]])
     result = validate_rows(df)
     statements = generate_sql_statements(
-        result.valid_rows, "ajuste", "28-SET-2026 10:00:00"
+        result.valid_rows, "ajuste", "2026-09-28 10:00:00"
     )
     assert statements == [
-        "EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'AJUSTE', 10, '28-SET-2026 10:00:00');"
+        "EXECUTE PROCEDURE KARDEX_ALTERA_QUANTIDADE(1, 'AJUSTE', 10, '2026-09-28 10:00:00');"
     ]
 
 
@@ -86,13 +86,13 @@ def test_generate_sql_statements_escapes_history():
     df = make_df([[1, 10]])
     result = validate_rows(df)
     statements = generate_sql_statements(
-        result.valid_rows, "O'Brien", "28-SET-2026 10:00:00"
+        result.valid_rows, "O'Brien", "2026-09-28 10:00:00"
     )
     assert "'O''BRIEN'" in statements[0]
 
 
 def test_build_date_str():
-    assert build_date_str("28-SET-2026", "10:00:00") == "28-SET-2026 10:00:00"
+    assert build_date_str("2026-09-28", "10:00:00") == "2026-09-28 10:00:00"
 
 
 def test_read_table_csv(tmp_path):

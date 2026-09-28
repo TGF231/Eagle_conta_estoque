@@ -28,7 +28,6 @@ from . import tema
 from .core import (
     COLUNA_ARQUIVO,
     HISTORICO_MAX_LEN,
-    PT_MONTHS,
     SOURCE_FILE_FILTER,
     FileImportError,
     build_date_str,
@@ -322,9 +321,9 @@ class KardexWindow(QWidget):
         self.status_label.style().polish(self.status_label)
 
     def _build_date_str(self) -> str:
-        qdate = self.date_edit.date()
-        month = PT_MONTHS[qdate.month()]
-        date_part = f"{qdate.day():02d}-{month}-{qdate.year()}"
+        # Formato ISO (YYYY-MM-DD HH:MM:SS): o Firebird interpreta sem depender
+        # do idioma/locale da conexão — nomes de mês em português quebravam.
+        date_part = self.date_edit.date().toString("yyyy-MM-dd")
         time_part = self.time_edit.time().toString("HH:mm:ss")
         return build_date_str(date_part, time_part)
 

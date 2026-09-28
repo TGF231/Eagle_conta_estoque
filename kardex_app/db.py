@@ -62,6 +62,16 @@ def _fbclient_embutido() -> Optional[str]:
     return caminho if os.path.exists(caminho) else None
 
 
+def _configurar_firebird_msg() -> None:
+    """Aponta o FIREBIRD para o firebird.msg embutido, senão o fbclient não
+    consegue formatar as mensagens de erro (\"can't format message ...\")."""
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return
+    if os.path.exists(os.path.join(base, "firebird.msg")):
+        os.environ.setdefault("FIREBIRD", base)
+
+
 def conectar(config: ConexaoConfig):
     """Abre a conexão Firebird. Importa `fdb` de forma tardia para o app rodar
     sem o driver quando a verificação não é usada."""
@@ -75,6 +85,7 @@ def conectar(config: ConexaoConfig):
 
     # No executável empacotado, aponta o fdb para a fbclient.dll embutida —
     # senão ele dependeria de um Firebird instalado na máquina.
+    _configurar_firebird_msg()
     dll = _fbclient_embutido()
     if dll:
         try:
