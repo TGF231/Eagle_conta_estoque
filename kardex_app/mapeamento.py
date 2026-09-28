@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .core import guess_columns, preview_dataframe
+from .core import colunas_visiveis, guess_columns, preview_dataframe
 
 
 class MapeamentoDialog(QDialog):
@@ -36,7 +36,7 @@ class MapeamentoDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Verificar colunas do arquivo")
         self.resize(720, 520)
-        self._headers = [str(c) for c in df.columns]
+        self._headers = colunas_visiveis(df)
         self._id_col: Optional[str] = None
         self._qty_col: Optional[str] = None
         self._build_ui(df, nome_arquivo)
@@ -52,7 +52,7 @@ class MapeamentoDialog(QDialog):
 
         info = QLabel(
             (f"Arquivo: {nome_arquivo}\n" if nome_arquivo else "")
-            + f"{len(df.columns)} coluna(s), {len(df)} linha(s). "
+            + f"{len(self._headers)} coluna(s), {len(df)} linha(s). "
             "Indique abaixo qual coluna contém o código do produto e qual "
             "contém a nova quantidade contada."
         )

@@ -2,8 +2,10 @@ import pandas as pd
 import pytest
 
 from kardex_app.core import (
+    COLUNA_ARQUIVO,
     FileImportError,
     build_date_str,
+    colunas_visiveis,
     escape_sql_text,
     format_quantidade,
     generate_sql_statements,
@@ -189,10 +191,24 @@ def test_read_many_aligns_by_position_with_different_headers(tmp_path):
     b = tmp_path / "b.csv"
     b.write_text("COD;QTD\n2;20\n", encoding="utf-8")
     df = read_many([a, b])
-    # adota os nomes do primeiro arquivo
-    assert list(df.columns) == ["PRODUTOS_ID", "PRODUTO_NOVA_QUANTIDADE"]
+    # adota os nomes do primeiro arquivo (colunas internas à parte)
+    assert colunas_visiveis(df) == ["PRODUTOS_ID", "PRODUTO_NOVA_QUANTIDADE"]
     result = validate_rows(df)
     assert [r.produtos_id for r in result.valid_rows] == [1, 2]
+
+
+def test_read_many_registra_proveniencia(tmp_path):
+    a = tmp_path / "loja1.csv"
+    a.write_text("PRODUTOS_ID;PRODUTO_NOVA_QUANTIDADE\n1;10\n", encoding="utf-8")
+    b = tmp_path / "loja2.csv"
+    b.write_text("PRODUTOS_ID;PRODUTO_NOVA_QUANTIDADE\n2;20\n", encoding="utf-8")
+    df = read_many([a, b])
+    assert COLUNA_ARQUIVO in df.columns
+    assert COLUNA_ARQUIVO not in colunas_visiveis(df)
+    assert list(df[COLUNA_ARQUIVO]) == ["loja1.csv", "loja2.csv"]
+    # a prévia não expõe a coluna interna
+    headers, _ = preview_dataframe(df)
+    assert COLUNA_ARQUIVO not in headers
 
 
 def test_read_many_rejects_mismatched_column_count(tmp_path):

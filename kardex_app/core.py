@@ -30,6 +30,10 @@ PT_MONTHS = {
 
 REQUIRED_COLUMNS = ("PRODUTOS_ID", "PRODUTO_NOVA_QUANTIDADE")
 
+# Coluna interna de proveniência (qual arquivo originou a linha). Colunas que
+# começam com "_" são internas: não aparecem no mapeamento nem na prévia.
+COLUNA_ARQUIVO = "_ARQUIVO"
+
 # KARDEX.KARDEX_HISTORICO é VARCHAR(200) (ver ddl/KARDEX.json).
 HISTORICO_MAX_LEN = 200
 
@@ -88,6 +92,11 @@ def _norm(name) -> str:
     return str(name).strip().upper()
 
 
+def colunas_visiveis(df: pd.DataFrame) -> list[str]:
+    """Colunas mostradas ao usuário — exclui as internas (prefixo '_')."""
+    return [str(c) for c in df.columns if not str(c).startswith("_")]
+
+
 def guess_columns(df: pd.DataFrame) -> tuple[Optional[str], Optional[str]]:
     """Tenta adivinhar as colunas de ID e quantidade pelos nomes esperados
     (comparação sem diferenciar maiúsculas/espaços). Devolve (id, qty) com
@@ -102,11 +111,11 @@ def preview_dataframe(
     df: pd.DataFrame, n: int = 15
 ) -> tuple[list[str], list[list[str]]]:
     """Cabeçalhos e as primeiras `n` linhas (como texto), para a prévia da tela
-    de mapeamento."""
-    headers = [str(c) for c in df.columns]
+    de mapeamento. Colunas internas (prefixo '_') são omitidas."""
+    headers = colunas_visiveis(df)
     rows: list[list[str]] = []
     for _, row in df.head(n).iterrows():
-        rows.append(["" if _is_blank(v) else str(v) for v in row.tolist()])
+        rows.append(["" if _is_blank(row[c]) else str(row[c]) for c in headers])
     return headers, rows
 
 
@@ -220,7 +229,9 @@ def read_many(
 
     Os arquivos precisam ter o mesmo número de colunas; a concatenação é feita
     **por posição**, adotando os nomes de coluna do primeiro arquivo (assim,
-    layouts iguais com cabeçalhos ligeiramente diferentes ainda unificam)."""
+    layouts iguais com cabeçalhos ligeiramente diferentes ainda unificam). Uma
+    coluna interna (`_ARQUIVO`) guarda a origem de cada linha — ela não aparece
+    no mapeamento nem na prévia, mas permite rastrear a proveniência."""
     if not paths:
         raise FileImportError("Nenhum arquivo selecionado.")
 
@@ -240,6 +251,8 @@ def read_many(
         else:
             df = df.copy()
             df.columns = base_cols
+        df = df.copy()
+        df[COLUNA_ARQUIVO] = nome
         frames.append(df)
 
     return pd.concat(frames, ignore_index=True)

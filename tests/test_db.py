@@ -60,6 +60,14 @@ def test_codigo_encontrado_em_produtos():
     assert r.encontrados == 2
 
 
+def test_zeros_a_esquerda_casam_com_produto():
+    # "007" e "0010" devem casar com os produtos 7 e 10, preservando o texto
+    conn = FakeConn(produtos={7, 10}, referencias={})
+    r = verificar_codigos(conn, ["007", "0010", "008"])
+    assert r.em_produtos == {"007", "0010"}
+    assert r.ausentes == ["008"]
+
+
 def test_codigo_encontrado_em_referencias_resolve_produtos_id():
     conn = FakeConn(produtos={10}, referencias={"7891234567895": 55})
     r = verificar_codigos(conn, ["10", "7891234567895", "0000"])

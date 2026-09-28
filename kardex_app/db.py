@@ -138,14 +138,21 @@ def verificar_codigos(conn, codigos: Iterable) -> VerificacaoResultado:
     cur = conn.cursor()
 
     # ---- PRODUTOS (só faz sentido consultar os que são inteiros) ----------
-    inteiros = _so_inteiros(lista)
-    for lote in _lotes(inteiros, CHUNK):
+    # Casa pelo VALOR inteiro, mas guarda o código ORIGINAL — assim "007" e "7"
+    # batem com o produto 7 sem que zeros à esquerda quebrem a comparação.
+    por_valor: dict[int, list[str]] = {}
+    for c in _so_inteiros(lista):
+        por_valor.setdefault(int(c), []).append(c)
+
+    valores = list(por_valor.keys())
+    for lote in _lotes(valores, CHUNK):
         marcadores = ", ".join(["?"] * len(lote))
         sql = f"SELECT PRODUTOS_ID FROM PRODUTOS WHERE PRODUTOS_ID IN ({marcadores})"
         try:
-            cur.execute(sql, [int(x) for x in lote])
+            cur.execute(sql, list(lote))
             for (pid,) in cur.fetchall():
-                resultado.em_produtos.add(str(pid))
+                for original in por_valor.get(int(pid), []):
+                    resultado.em_produtos.add(original)
         except Exception as exc:
             raise DBError(f"Falha ao consultar PRODUTOS: {exc}") from exc
 

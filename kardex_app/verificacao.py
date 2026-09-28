@@ -24,12 +24,19 @@ from .db import CHARSETS, ConexaoConfig, DBError, conectar, verificar_codigos
 
 
 class VerificacaoDialog(QDialog):
-    def __init__(self, codigos, parent=None, config: ConexaoConfig | None = None):
+    def __init__(
+        self,
+        codigos,
+        parent=None,
+        config: ConexaoConfig | None = None,
+        origem: dict | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Verificar códigos no banco (Firebird 2.5)")
         self.resize(640, 560)
         self._codigos = list(codigos)
         self._config = config or ConexaoConfig()
+        self._origem = origem or {}
         self._build_ui()
 
     def config(self) -> ConexaoConfig:
@@ -176,7 +183,12 @@ class VerificacaoDialog(QDialog):
             linhas.append("")
         if r.ausentes:
             linhas.append("Códigos NÃO encontrados:")
-            linhas.extend(f"  {c}" for c in r.ausentes)
+            for c in r.ausentes:
+                arquivos = sorted(self._origem.get(c, ()))
+                if arquivos:
+                    linhas.append(f"  {c}  (arquivo: {', '.join(arquivos)})")
+                else:
+                    linhas.append(f"  {c}")
         else:
             linhas.append("Todos os códigos foram encontrados.")
 

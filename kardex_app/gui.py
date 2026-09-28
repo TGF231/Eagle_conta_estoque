@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from . import tema
 from .core import (
+    COLUNA_ARQUIVO,
     HISTORICO_MAX_LEN,
     PT_MONTHS,
     SOURCE_FILE_FILTER,
@@ -278,17 +279,23 @@ class KardexWindow(QWidget):
     def _verificar_no_banco(self) -> None:
         if self._df is None or not self._id_col:
             return
-        codigos = [
-            v
-            for v in self._df[self._id_col].tolist()
-            if v is not None and str(v).strip() != ""
-        ]
+        codigos = []
+        origem: dict[str, set[str]] = {}
+        tem_origem = COLUNA_ARQUIVO in self._df.columns
+        for _, row in self._df.iterrows():
+            valor = row[self._id_col]
+            if valor is None or str(valor).strip() == "":
+                continue
+            codigo = str(valor).strip()
+            codigos.append(codigo)
+            if tem_origem:
+                origem.setdefault(codigo, set()).add(str(row[COLUNA_ARQUIVO]))
         if not codigos:
             QMessageBox.information(
                 self, "Sem códigos", "Não há códigos para verificar."
             )
             return
-        dialog = VerificacaoDialog(codigos, self, self._db_config)
+        dialog = VerificacaoDialog(codigos, self, self._db_config, origem=origem)
         dialog.exec()
         # guarda a config para reaproveitar na próxima abertura (sem a senha
         # persistir em disco — fica só em memória nesta sessão)
