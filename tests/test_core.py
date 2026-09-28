@@ -153,6 +153,32 @@ def test_build_script_sem_recomputa():
     assert script.strip() == stmts[0]
 
 
+def test_build_script_commit_a_cada_x():
+    from kardex_app.core import build_script
+
+    stmts = [f"EXECUTE PROCEDURE K({i});" for i in range(1, 6)]  # 5 statements
+    script = build_script(stmts, com_recomputa=False, commit_interval=2)
+    # COMMIT após o 2º e o 4º (não após o 5º, que é o último)
+    linhas = [l for l in script.splitlines() if l]
+    assert linhas == [
+        "EXECUTE PROCEDURE K(1);",
+        "EXECUTE PROCEDURE K(2);",
+        "COMMIT;",
+        "EXECUTE PROCEDURE K(3);",
+        "EXECUTE PROCEDURE K(4);",
+        "COMMIT;",
+        "EXECUTE PROCEDURE K(5);",
+    ]
+
+
+def test_build_script_commit_zero_sem_intermediarios():
+    from kardex_app.core import build_script
+
+    stmts = [f"EXECUTE PROCEDURE K({i});" for i in range(1, 4)]
+    script = build_script(stmts, com_recomputa=False, commit_interval=0)
+    assert "COMMIT;" not in script
+
+
 def test_generate_zero_statements():
     from kardex_app.core import generate_zero_statements
 

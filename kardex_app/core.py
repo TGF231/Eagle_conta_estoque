@@ -27,6 +27,10 @@ HISTORICO_MAX_LEN = 200
 QUANTIDADE_PRECISION = 14
 QUANTIDADE_SCALE = 5
 
+# Recompute do estoque, rodado antes e depois dos ajustes. A data antiga força o
+# recálculo desde o início do KARDEX.
+RECOMPUTA_DATA = "01.01.0100 00:00:00"
+
 SUPPORTED_EXTENSIONS = {".xlsx", ".xlsm", ".xls", ".csv", ".txt"}
 
 SOURCE_FILE_FILTER = (
@@ -385,6 +389,17 @@ def generate_sql_statements(
     return statements
 
 
+def generate_recompute_statements(
+    produtos_ids: Iterable[int], date_str: str = RECOMPUTA_DATA
+) -> list[str]:
+    """Um KARDEX_RECOMPUTA por produto (statements simples, sem EXECUTE BLOCK) —
+    usado no pacote com progresso, em que cada lote é executado à parte."""
+    return [
+        f"EXECUTE PROCEDURE KARDEX_RECOMPUTA({int(pid)}, '{date_str}');"
+        for pid in produtos_ids
+    ]
+
+
 def generate_zero_statements(
     produtos_ids: Iterable[int], history: str, date_str: str
 ) -> list[str]:
@@ -396,13 +411,6 @@ def generate_zero_statements(
         f"{int(pid)}, '{escaped_history}', 0, '{date_str}');"
         for pid in produtos_ids
     ]
-
-
-# Recompute do estoque de todos os itens, rodado antes e depois dos ajustes.
-# A data antiga força o recálculo desde o início do KARDEX. O bloco é PSQL
-# (FOR SELECT ... DO), então precisa de EXECUTE BLOCK + SET TERM para rodar num
-# script (isql/IBExpert).
-RECOMPUTA_DATA = "01.01.0100 00:00:00"
 
 
 def _bloco_recomputa() -> str:
@@ -423,27 +431,44 @@ def _bloco_recomputa() -> str:
     )
 
 
-def build_script(statements: list[str], com_recomputa: bool = True) -> str:
+def _com_commits(statements: list[str], intervalo: int) -> list[str]:
+    """Insere COMMIT; a cada `intervalo` statements (0 = sem commits intermediários).
+    Em bases grandes, cada KARDEX_ALTERA_QUANTIDADE é caro; committar em blocos
+    evita uma transação única gigante."""
+    if not intervalo or intervalo <= 0:
+        return list(statements)
+    saida: list[str] = []
+    for i, s in enumerate(statements, start=1):
+        saida.append(s)
+        if i % intervalo == 0 and i < len(statements):
+            saida.append("COMMIT;")
+    return saida
+
+
+def build_script(
+    statements: list[str], com_recomputa: bool = True, commit_interval: int = 0
+) -> str:
     """Monta o script final. Com recompute:
 
         recompute (todos os itens)
         COMMIT;
-        <lançamentos>
+        <lançamentos, com COMMIT a cada commit_interval registros>
         COMMIT;
         recompute (todos os itens)
         COMMIT;
 
     Cada recompute é um statement próprio, com COMMIT após o primeiro, antes do
     segundo (após os lançamentos) e depois do segundo."""
+    lancamentos = _com_commits(statements, commit_interval)
     if not com_recomputa:
-        return "\n".join(statements) + "\n"
+        return "\n".join(lancamentos) + "\n"
 
     partes: list[str] = [
         _bloco_recomputa(),
         "COMMIT;",
         "",
     ]
-    partes.extend(statements)
+    partes.extend(lancamentos)
     partes.extend(
         [
             "",

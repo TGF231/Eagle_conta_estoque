@@ -120,6 +120,17 @@ def listar_produtos_ativos(conn) -> set[int]:
         raise DBError(f"Falha ao listar produtos ativos: {exc}") from exc
 
 
+def listar_todos_produtos(conn) -> list[int]:
+    """Todos os PRODUTOS_ID, ordenados. Base para o recompute com progresso
+    (um KARDEX_RECOMPUTA por produto, em lotes)."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT PRODUTOS_ID FROM PRODUTOS ORDER BY PRODUTOS_ID")
+        return [int(r[0]) for r in cur.fetchall()]
+    except Exception as exc:
+        raise DBError(f"Falha ao listar produtos: {exc}") from exc
+
+
 def _lotes(seq: list, tamanho: int) -> Iterable[list]:
     for i in range(0, len(seq), tamanho):
         yield seq[i : i + tamanho]

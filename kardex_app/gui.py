@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QTimeEdit,
     QVBoxLayout,
     QWidget,
@@ -40,7 +41,7 @@ from .core import (
     validate_history,
     validate_rows,
 )
-from .db import DBError, conectar, listar_produtos_ativos
+from .db import DBError, conectar, listar_produtos_ativos, listar_todos_produtos
 from .mapeamento import MapeamentoDialog
 from .packager import write_package
 from .verificacao import VerificacaoDialog
@@ -177,6 +178,22 @@ class KardexWindow(QWidget):
             "o IBExpert)"
         )
         raiz.addWidget(self.pacote_chk)
+
+        commit_row = QHBoxLayout()
+        commit_row.setContentsMargins(0, 0, 0, 0)
+        commit_row.setSpacing(6)
+        commit_row.addWidget(QLabel("COMMIT a cada"))
+        self.commit_spin = QSpinBox()
+        self.commit_spin.setRange(1, 100000)
+        self.commit_spin.setValue(200)
+        self.commit_spin.setToolTip(
+            "Em bases grandes, committar em blocos evita uma transação única "
+            "gigante e dá progresso mais frequente no pacote."
+        )
+        commit_row.addWidget(self.commit_spin)
+        commit_row.addWidget(QLabel("registros"))
+        commit_row.addStretch(1)
+        raiz.addLayout(commit_row)
 
         # ------------------------------------------------------------ ação
         acao = QHBoxLayout()
@@ -403,18 +420,18 @@ class KardexWindow(QWidget):
         agregadas = sorted(
             aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
         )
-        statements = generate_sql_statements(agregadas, history, date_str)
+        count_stmts = generate_sql_statements(agregadas, history, date_str)
 
         # zeramento dos itens não contados, embutido no mesmo script
-        zerados = 0
+        zero_stmts: list = []
         if self.zerar_chk.isChecked():
             zero_stmts = self._statements_zeramento(agregadas, history, date_str)
             if zero_stmts is None:
                 return  # usuário cancelou / falha de conexão
-            statements = statements + zero_stmts
-            zerados = len(zero_stmts)
+        statements = count_stmts + zero_stmts
 
-        script_content = build_script(statements)
+        commit_interval = self.commit_spin.value()
+        script_content = build_script(statements, commit_interval=commit_interval)
         try:
             Path(sql_path).write_text(script_content, encoding="utf-8")
         except OSError as exc:
@@ -423,26 +440,35 @@ class KardexWindow(QWidget):
             return
 
         pacote_dir = None
+        pulados = 0
         if self.pacote_chk.isChecked():
-            pacote_dir = self._gerar_pacote(sql_path, script_content)
-            if pacote_dir is None:
-                return  # usuário cancelou a conexão
+            resultado_pac = self._gerar_pacote(
+                sql_path, agregadas, zero_stmts, history, date_str, commit_interval
+            )
+            if resultado_pac is None:
+                return  # usuário cancelou a conexão / falha
+            pacote_dir, pulados = resultado_pac
 
         msg = f"SQL gerado com sucesso: {len(agregadas)} produto(s) contado(s)."
         unidas = len(result.valid_rows) - len(agregadas)
         if unidas > 0:
             msg += f" {unidas} linha(s) unida(s) por código repetido."
-        if zerados:
-            msg += f" {zerados} item(ns) zerado(s)."
+        if zero_stmts:
+            msg += f" {len(zero_stmts)} item(ns) zerado(s)."
+        if pulados:
+            msg += f" {pulados} produto(s) fora do banco pulado(s) no pacote."
         if result.issues:
             msg += f" {len(result.issues)} linha(s) ignorada(s)."
         if pacote_dir:
             msg += f" Pacote .bat/.ps1 em: {pacote_dir}"
         self._set_status(msg, role="ok")
 
-    def _gerar_pacote(self, sql_path: str, script_content: str):
-        """Grava o pacote executável (script.sql + executar.bat/.ps1) numa pasta
-        ao lado do .sql. Reaproveita a conexão; só pede se não houver."""
+    def _gerar_pacote(self, sql_path, agregadas, zero_stmts, history, date_str,
+                      lote):
+        """Grava o pacote executável (partes + executar.bat/.ps1 com contador de
+        progresso) numa pasta ao lado do .sql. Consulta o banco para o recompute
+        de todos os produtos e **pula os códigos que não existem em PRODUTOS**
+        (evita erros no isql). Devolve (pasta, qtd_pulados) ou None."""
         if self._db_config is None or not self._db_config.database.strip():
             dialog = ConexaoDialog(self, self._db_config)
             if not dialog.exec():
@@ -455,13 +481,36 @@ class KardexWindow(QWidget):
                 return None
             self._db_config = dialog.config()
 
+        conn = None
+        try:
+            conn = conectar(self._db_config)
+            produtos = listar_todos_produtos(conn)
+        except DBError as exc:
+            QMessageBox.critical(self, "Erro no banco", str(exc))
+            self._set_status("Falha ao consultar o banco para o pacote.", role="erro")
+            return None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        existentes_set = set(produtos)
+        existentes = [r for r in agregadas if r.produtos_id in existentes_set]
+        pulados = len(agregadas) - len(existentes)
+        lancamentos = generate_sql_statements(existentes, history, date_str) + zero_stmts
+
         base = Path(sql_path).with_suffix("")
         pasta = f"{base}_pacote"
         try:
-            return write_package(pasta, script_content, self._db_config)
+            caminho = write_package(
+                pasta, self._db_config, produtos, lancamentos, lote=lote
+            )
         except OSError as exc:
             QMessageBox.critical(self, "Erro ao gerar pacote", str(exc))
             return None
+        return caminho, pulados
 
     def _statements_zeramento(self, agregadas, history, date_str):
         """Consulta o banco e devolve os lançamentos-zero para os produtos

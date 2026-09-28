@@ -175,6 +175,15 @@ criar uma pasta `<nome>_pacote/` ao lado dele com:
 Basta dar duplo-clique no `.bat` — bem mais rápido que colar o script no
 IBExpert. A conexão informada em **Verificar no banco…** é reaproveitada.
 
+O `.bat`/`.ps1` mostra um **contador de progresso** (`[N/Total]`), pois o
+trabalho é dividido em partes (`parte_NNNN.sql`) executadas uma a uma. Códigos
+que **não existem em PRODUTOS são pulados** no pacote (evita erros no isql).
+
+O campo **COMMIT a cada X registros** controla de quantos em quantos lançamentos
+o script comita — em bases grandes, blocos menores evitam uma transação única
+gigante (cada `KARDEX_ALTERA_QUANTIDADE` é uma procedure individual). No pacote,
+esse X também é o tamanho de cada parte.
+
 ## Desenvolvimento
 
 Instale as dependências de desenvolvimento e rode os testes:

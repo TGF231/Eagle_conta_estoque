@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Empacota o SQL gerado num pacote executável (script.sql + executar.bat/.ps1)
-que roda direto no isql do Firebird — bem mais rápido que colar no IBExpert.
+"""Empacota o SQL num pacote executável que roda direto no isql, **com
+contador de progresso**: o trabalho é dividido em partes (`parte_0001.sql`…) e o
+driver .bat/.ps1 executa uma por uma imprimindo "Parte N/Total".
 
-Inspirado no eagle_sql_builder, porém enxuto: só o necessário para executar um
-script (sem backup/paralelismo/triggers)."""
+O recompute é emitido como um KARDEX_RECOMPUTA por produto (statements simples),
+em lotes, para dar progresso — em vez de um único EXECUTE BLOCK que roda tudo
+sem retorno. Inspirado no eagle_sql_builder, porém enxuto."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Iterable
 
+from .core import RECOMPUTA_DATA, generate_recompute_statements
 from .db import ConexaoConfig
 
-# Onde procurar o isql.exe (primeiro que existir vence).
 FB_BIN_CANDIDATES = [
     r"C:\Program Files\Firebird\Firebird_2_5\bin",
     r"C:\Program Files\Firebird\Firebird_3_0",
@@ -21,7 +24,6 @@ FB_BIN_CANDIDATES = [
     r"C:\Program Files (x86)\Firebird\Firebird_3_0",
 ]
 
-# Charset da conexão -> codec Python para gravar o script.sql com os bytes certos.
 _ENCODINGS = {
     "WIN1252": "cp1252",
     "ISO8859_1": "latin-1",
@@ -29,7 +31,9 @@ _ENCODINGS = {
     "NONE": "cp1252",
 }
 
-SCRIPT_NAME = "script.sql"
+# Statements por parte: cada parte é uma chamada isql; lotes menores = progresso
+# mais frequente, à custa de mais processos isql.
+LOTE = 100
 
 
 def encoding_para(charset: str) -> str:
@@ -41,15 +45,34 @@ def _connstring(cfg: ConexaoConfig) -> str:
     return f"{host}/{int(cfg.port or 3050)}:{cfg.database}"
 
 
+def _lotes(seq: list, n: int) -> Iterable[list]:
+    for i in range(0, len(seq), n):
+        yield seq[i : i + n]
+
+
+def montar_partes(
+    recompute_ids: list[int],
+    lancamento_statements: list[str],
+    lote: int = LOTE,
+) -> list[str]:
+    """Monta o corpo de cada parte: recompute (antes), lançamentos, recompute
+    (depois), cada lote com COMMIT ao final. Devolve a lista de conteúdos."""
+    rec = generate_recompute_statements(recompute_ids, RECOMPUTA_DATA)
+    partes: list[str] = []
+    for grupo in (rec, lancamento_statements, rec):
+        for lote_stmts in _lotes(grupo, lote):
+            if lote_stmts:
+                partes.append("\n".join(lote_stmts) + "\nCOMMIT;\n")
+    return partes
+
+
 def build_bat(cfg: ConexaoConfig) -> str:
-    """.bat puro-cmd: autodetecta o isql, roda script.sql com -b (para no 1º erro),
-    registra tudo em execucao.log."""
     db = _connstring(cfg)
     cs = cfg.charset or "WIN1252"
     l = [
         "@echo off",
         "chcp 1252 >nul",
-        "setlocal",
+        "setlocal enabledelayedexpansion",
         f'set "DB={db}"',
         f'set "USR={cfg.user or "SYSDBA"}"',
         f'set "PWD={cfg.password}"',
@@ -64,12 +87,21 @@ def build_bat(cfg: ConexaoConfig) -> str:
         "exit /b 1",
         ":fb_ok",
         'set "ISQL=%FBBIN%\\isql.exe"',
-        'echo [%time%] Firebird: "%FBBIN%"',
+        'echo Firebird: "%FBBIN%"',
         'echo [%date% %time%] ==== Execucao ==== >>"%LOG%"',
-        "echo Executando script.sql via isql...",
-        f'"%ISQL%" -b -c 2048 -user %USR% -password %PWD% -ch %CS% '
-        f'-i "%~dp0{SCRIPT_NAME}" "%DB%" >>"%LOG%" 2>&1',
-        "if errorlevel 1 goto err",
+        "set /a TOTAL=0",
+        'for %%f in ("%~dp0parte_*.sql") do set /a TOTAL+=1',
+        "if %TOTAL%==0 echo [ERRO] Nenhuma parte encontrada. & pause & exit /b 1",
+        "echo Total de partes: %TOTAL%",
+        "set /a N=0",
+        'for %%f in ("%~dp0parte_*.sql") do (',
+        "  set /a N+=1",
+        '  echo [!N!/%TOTAL%] Executando %%~nxf ...',
+        '  echo [%date% %time%] [!N!/%TOTAL%] %%~nxf >>"%LOG%"',
+        '  "%ISQL%" -b -c 2048 -user %USR% -password %PWD% -ch %CS% '
+        '-i "%%f" "%DB%" >>"%LOG%" 2>&1',
+        "  if errorlevel 1 goto err",
+        ")",
         "echo Concluido com sucesso. Log em execucao.log",
         "pause",
         "exit /b 0",
@@ -77,7 +109,7 @@ def build_bat(cfg: ConexaoConfig) -> str:
         "echo ----------------------------------------",
         'type "%LOG%"',
         "echo ----------------------------------------",
-        "echo [ERRO] isql retornou erro (veja execucao.log).",
+        "echo [ERRO] isql retornou erro na parte !N!/%TOTAL% (veja execucao.log).",
         "pause",
         "exit /b 1",
         "",
@@ -103,25 +135,55 @@ def build_ps1(cfg: ConexaoConfig) -> str:
         "$ISQL = Join-Path $FBBIN 'isql.exe'\r\n"
         "$Log = Join-Path $Dir 'execucao.log'\r\n"
         "Write-Host \"Firebird: $FBBIN\"\r\n"
-        "Write-Host 'Executando script.sql via isql...'\r\n"
-        f"$a = @('-b','-c','2048','-user',$Usr,'-password',$Pw,'-ch',$Cs,'-i',"
-        f"(Join-Path $Dir '{SCRIPT_NAME}'),$DB)\r\n"
-        "& $ISQL @a 2>&1 | Tee-Object -FilePath $Log\r\n"
-        "if ($LASTEXITCODE -ne 0) { Write-Host '[ERRO] isql retornou erro "
-        "(veja execucao.log).'; Read-Host 'ENTER para sair' | Out-Null; exit 1 }\r\n"
+        "$Partes = Get-ChildItem -Path $Dir -Filter 'parte_*.sql' | Sort-Object Name\r\n"
+        "$Total = $Partes.Count\r\n"
+        "if ($Total -eq 0) { Write-Host '[ERRO] Nenhuma parte encontrada.'; "
+        "Read-Host 'ENTER para sair' | Out-Null; exit 1 }\r\n"
+        "Write-Host \"Total de partes: $Total\"\r\n"
+        "$n = 0\r\n"
+        "foreach ($p in $Partes) {\r\n"
+        "  $n++\r\n"
+        "  $pct = [int](100 * $n / $Total)\r\n"
+        "  Write-Progress -Activity 'Executando no isql' "
+        "-Status \"Parte $n/$Total ($($p.Name))\" -PercentComplete $pct\r\n"
+        "  Write-Host \"[$n/$Total] $($p.Name) ...\"\r\n"
+        "  Add-Content -Path $Log -Value (\"[{0}] [{1}/{2}] {3}\" -f "
+        "(Get-Date), $n, $Total, $p.Name)\r\n"
+        f"  $a = @('-b','-c','2048','-user',$Usr,'-password',$Pw,'-ch',$Cs,"
+        "'-i',$p.FullName,$DB)\r\n"
+        "  & $ISQL @a 2>&1 | Add-Content -Path $Log\r\n"
+        "  if ($LASTEXITCODE -ne 0) { Write-Host \"[ERRO] isql falhou na parte "
+        "$n/$Total (veja execucao.log).\"; Read-Host 'ENTER para sair' | Out-Null; "
+        "exit 1 }\r\n"
+        "}\r\n"
+        "Write-Progress -Activity 'Executando no isql' -Completed\r\n"
         "Write-Host 'Concluido com sucesso.'\r\n"
         "Read-Host 'ENTER para sair' | Out-Null\r\n"
     )
 
 
-def write_package(pasta: str, sql_content: str, cfg: ConexaoConfig) -> str:
-    """Grava script.sql (na codificação do charset), executar.bat e executar.ps1
-    na pasta indicada. Devolve o caminho da pasta."""
+def write_package(
+    pasta: str,
+    cfg: ConexaoConfig,
+    recompute_ids: list[int],
+    lancamento_statements: list[str],
+    lote: int = LOTE,
+) -> str:
+    """Grava as partes (parte_NNNN.sql) + executar.bat + executar.ps1. Devolve o
+    caminho da pasta."""
     pasta_path = Path(pasta)
     pasta_path.mkdir(parents=True, exist_ok=True)
 
+    # limpa partes antigas de uma geração anterior na mesma pasta
+    for antigo in pasta_path.glob("parte_*.sql"):
+        antigo.unlink()
+
     enc = encoding_para(cfg.charset)
-    (pasta_path / SCRIPT_NAME).write_text(sql_content, encoding=enc, errors="replace")
+    partes = montar_partes(recompute_ids, lancamento_statements, lote)
+    for i, corpo in enumerate(partes, start=1):
+        (pasta_path / f"parte_{i:04d}.sql").write_text(
+            corpo, encoding=enc, errors="replace"
+        )
     (pasta_path / "executar.bat").write_text(build_bat(cfg), encoding="cp1252")
     (pasta_path / "executar.ps1").write_text(
         build_ps1(cfg), encoding="utf-8-sig", newline=""
