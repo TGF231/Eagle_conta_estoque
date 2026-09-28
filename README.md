@@ -1,4 +1,4 @@
-# Eagle — Importa KARDEX
+# Eagle — Contagem de Estoque Externa
 
 Ferramenta com interface gráfica (PySide6) para importar uma contagem de estoque
 e gerar um script SQL de ajuste. Cada linha da contagem vira uma chamada
@@ -13,7 +13,13 @@ tabela `KARDEX` e, pela própria procedure, reflete o efeito no apuramento de CM
 - Para a verificação no banco: driver `fdb` **e** a biblioteca cliente do
   Firebird (`fbclient.dll`) acessível. O restante do app funciona sem eles.
 
-## Instalação
+## Instalação 
+
+### Execução Padrão ↓
+
+ - Faça o download da última versão na aba de Releases e rode o executável (Sem instalação nem configuração necessários.)
+
+### Execução de desenvolvimento ↓ 
 
 ```bash
 python -m venv .venv
@@ -23,10 +29,14 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Uso
+# Como Usar
 
 ```bash
 python main.py
+```
+OU
+```
+Eagle_Contagem_de_Estoque.exe
 ```
 
 Na janela:
