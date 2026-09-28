@@ -157,6 +157,21 @@ independentemente do idioma da conexão. Os lançamentos saem ordenados por
 código. Não há bloco de recompute separado: a própria `KARDEX_ALTERA_QUANTIDADE`
 recomputa o estoque do produto ao final.
 
+## Executar no banco (direto do app)
+
+Depois de confirmar as colunas, o botão **Executar no banco…** roda os
+lançamentos direto no Firebird (via `fdb`), numa thread, sem precisar do
+`.bat`/`.ps1`. Mostra:
+
+- **barra de progresso** com porcentagem e `feito/total`;
+- **tempo decorrido**, **velocidade** (lançamentos/s) e **ETA**;
+- **estatísticas de transação/servidor** ao vivo — OIT/OAT/OST/próxima
+  transação, transações ativas e I/O de páginas — atualizadas a cada COMMIT.
+
+Comita a cada X registros (mesmo campo), tem **Cancelar** (faz rollback do que
+ainda não foi commitado) e pede confirmação antes de alterar o estoque (faça um
+backup antes). Pula códigos fora de `PRODUTOS` e aplica o zeramento se marcado.
+
 ## Pacote executável (isql)
 
 Marque **Gerar pacote .bat/.ps1 para rodar direto no isql** para, além do `.sql`,

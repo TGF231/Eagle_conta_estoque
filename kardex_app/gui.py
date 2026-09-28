@@ -42,6 +42,7 @@ from .core import (
     validate_rows,
 )
 from .db import DBError, conectar, listar_produtos_ativos, listar_todos_produtos
+from .executor import ExecucaoDialog
 from .mapeamento import MapeamentoDialog
 from .packager import write_package
 from .verificacao import VerificacaoDialog
@@ -143,6 +144,10 @@ class KardexWindow(QWidget):
         self.db_btn.setEnabled(False)
         self.db_btn.clicked.connect(self._verificar_no_banco)
         map_row.addWidget(self.db_btn)
+        self.exec_btn = QPushButton("Executar no banco…")
+        self.exec_btn.setEnabled(False)
+        self.exec_btn.clicked.connect(self._executar_no_banco)
+        map_row.addWidget(self.exec_btn)
         map_container = QWidget()
         map_container.setLayout(map_row)
         files_form.addRow("Colunas:", map_container)
@@ -270,6 +275,7 @@ class KardexWindow(QWidget):
         self._qty_col = None
         self.map_btn.setEnabled(False)
         self.db_btn.setEnabled(False)
+        self.exec_btn.setEnabled(False)
         try:
             self._df = read_many(
                 self._paths, has_header=not self.chk_sem_cabecalho.isChecked()
@@ -299,6 +305,7 @@ class KardexWindow(QWidget):
             )
             self.map_label.setProperty("role", "ok")
             self.db_btn.setEnabled(True)
+            self.exec_btn.setEnabled(True)
         else:
             if not (self._id_col and self._qty_col):
                 self.map_label.setText(
@@ -509,6 +516,96 @@ class KardexWindow(QWidget):
             QMessageBox.critical(self, "Erro ao gerar pacote", str(exc))
             return None
         return caminho, pulados
+
+    def _executar_no_banco(self) -> None:
+        """Executa os lançamentos direto no banco (via fdb), com barra de
+        progresso, tempo e estatísticas — sem gerar .bat/.ps1."""
+        if self._df is None or not (self._id_col and self._qty_col):
+            return
+        history = self.history_edit.text()
+        erro = validate_history(history)
+        if erro:
+            QMessageBox.critical(self, "Erro", erro)
+            return
+        try:
+            result = validate_rows(self._df, self._id_col, self._qty_col)
+        except FileImportError as exc:
+            QMessageBox.critical(self, "Erro", str(exc))
+            return
+        if not result.valid_rows:
+            QMessageBox.warning(self, "Sem dados", "Nenhuma linha válida.")
+            return
+
+        date_str = self._build_date_str()
+        agregadas = sorted(
+            aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
+        )
+
+        if self._db_config is None or not self._db_config.database.strip():
+            dialog = ConexaoDialog(self, self._db_config)
+            if not dialog.exec():
+                return
+            self._db_config = dialog.config()
+
+        conn = None
+        try:
+            conn = conectar(self._db_config)
+            produtos = set(listar_todos_produtos(conn))
+            ativos = (
+                listar_produtos_ativos(conn)
+                if self.zerar_chk.isChecked()
+                else set()
+            )
+        except DBError as exc:
+            QMessageBox.critical(self, "Erro no banco", str(exc))
+            return
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        existentes = [r for r in agregadas if r.produtos_id in produtos]
+        pulados = len(agregadas) - len(existentes)
+        statements = generate_sql_statements(existentes, history, date_str)
+        zerados = 0
+        if self.zerar_chk.isChecked():
+            nao_contados = sorted(ativos - {r.produtos_id for r in existentes})
+            zero = generate_zero_statements(nao_contados, history, date_str)
+            statements += zero
+            zerados = len(zero)
+
+        if not statements:
+            QMessageBox.warning(
+                self, "Nada a executar",
+                "Nenhum lançamento a executar (todos os códigos estão fora do "
+                "banco?).",
+            )
+            return
+
+        resumo = (f"{len(existentes)} contado(s)"
+                  + (f", {zerados} zerado(s)" if zerados else "")
+                  + (f", {pulados} fora do banco pulado(s)" if pulados else ""))
+        resp = QMessageBox.question(
+            self,
+            "Executar no banco",
+            f"Isto vai ALTERAR o estoque no banco:\n{self._db_config.database}\n\n"
+            f"{len(statements)} lançamento(s) — {resumo}.\n\n"
+            "Recomenda-se um backup antes. Continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+
+        ExecucaoDialog(
+            self._db_config, statements, self.commit_spin.value(), self
+        ).exec()
+        self._set_status(
+            f"Execução no banco: {len(statements)} lançamento(s) — {resumo}.",
+            role="ok",
+        )
 
     def _statements_zeramento(self, agregadas, history, date_str):
         """Consulta o banco e devolve os lançamentos-zero para os produtos
