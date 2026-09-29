@@ -180,6 +180,13 @@ Comita a cada X registros (mesmo campo), tem **Cancelar** (faz rollback do que
 ainda não foi commitado) e pede confirmação antes de alterar o estoque. Pula
 códigos fora de `PRODUTOS` e aplica o zeramento se marcado.
 
+A execução é **paralela**: o campo **Conexões paralelas** (padrão 4) define
+quantas conexões/transações simultâneas processam os lançamentos. Como cada
+produto é independente no `KARDEX`, os lançamentos são divididos entre as
+conexões sem conflito (a ordem por código é dispensada), acelerando bastante em
+bases grandes. Cada conexão comita a cada X e, em erro/cancelamento, desfaz
+apenas o seu próprio lote não commitado.
+
 Com **Fazer backup do banco (gbak) antes de executar** marcado (padrão), o app
 gera um `.fbk` com `gbak -b -g` antes dos lançamentos; se o backup falhar, a
 execução é **abortada** e nada é alterado. Requer o `gbak.exe` do Firebird

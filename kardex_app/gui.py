@@ -223,6 +223,17 @@ class KardexWindow(QWidget):
         )
         commit_row.addWidget(self.commit_spin)
         commit_row.addWidget(QLabel("registros"))
+        commit_row.addSpacing(16)
+        commit_row.addWidget(QLabel("Conexões paralelas"))
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 32)
+        self.workers_spin.setValue(4)
+        self.workers_spin.setToolTip(
+            "Nº de conexões/transações simultâneas na execução pela interface. "
+            "Cada produto é independente, então acelera bastante em bases "
+            "grandes."
+        )
+        commit_row.addWidget(self.workers_spin)
         commit_row.addStretch(1)
         raiz.addLayout(commit_row)
 
@@ -707,7 +718,7 @@ class KardexWindow(QWidget):
 
         ExecucaoDialog(
             self._db_config, statements, self.commit_spin.value(),
-            backup_path, self
+            backup_path, self.workers_spin.value(), self
         ).exec()
         self._set_status(f"Execução no banco: {resumo}", role="ok")
 

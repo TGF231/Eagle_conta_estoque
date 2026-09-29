@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 
 from PySide6.QtCore import QThread, QTimer, Signal
@@ -71,13 +72,17 @@ class ExecucaoWorker(QThread):
 
     def __init__(self, cfg: ConexaoConfig, statements: list[str],
                  commit_interval: int, backup_path: str | None = None,
-                 parent=None):
+                 n_workers: int = 4, parent=None):
         super().__init__(parent)
         self._cfg = cfg
         self._stmts = statements
         self._commit = max(1, int(commit_interval or 1))
         self._backup_path = backup_path
+        self._n_workers = max(1, int(n_workers or 1))
         self._cancelar = False
+        self._feito = 0
+        self._erro = None
+        self._lock = threading.Lock()
 
     def cancelar(self) -> None:
         self._cancelar = True
@@ -118,56 +123,35 @@ class ExecucaoWorker(QThread):
         self.mensagem.emit(f"Backup gerado: {self._backup_path}")
         return True
 
-    def run(self) -> None:
-        total = len(self._stmts)
+    def _rodar_particao(self, stmts: list[str]) -> None:
+        """Executado numa thread própria, com sua própria conexão/transação.
+        Cada produto é independente (linhas distintas no KARDEX), então
+        partições diferentes não conflitam."""
         con = None
-        t0 = time.monotonic()
         try:
-            if not self._fazer_backup():
-                return
             con = conectar(self._cfg)
-            try:
-                self.mensagem.emit(f"Conectado: {con.server_version}")
-            except Exception:
-                self.mensagem.emit("Conectado.")
             cur = con.cursor()
-            feito = 0
-            for i, sql in enumerate(self._stmts, start=1):
-                if self._cancelar:
+            n = 0
+            for sql in stmts:
+                if self._cancelar or self._erro:
                     con.rollback()
-                    self.terminou.emit(
-                        False, f"Cancelado após {feito} de {total} (rollback)."
-                    )
                     return
                 cur.execute(sql)
-                feito = i
-                if i % self._commit == 0:
+                n += 1
+                with self._lock:
+                    self._feito += 1
+                if n % self._commit == 0:
                     con.commit()
-                    self.estatisticas.emit(_coletar_stats(con))
-                if i % 20 == 0 or i == total:
-                    self.progresso.emit(feito, total, time.monotonic() - t0)
             con.commit()
-            self.estatisticas.emit(_coletar_stats(con))
-            self.progresso.emit(total, total, time.monotonic() - t0)
-            self.terminou.emit(
-                True,
-                f"Concluído: {total} lançamento(s) em "
-                f"{time.monotonic() - t0:.1f}s.",
-            )
-        except DBError as exc:
+        except Exception as exc:
+            with self._lock:
+                if self._erro is None:
+                    self._erro = f"Erro na execução: {exc}"
             if con is not None:
                 try:
                     con.rollback()
                 except Exception:
                     pass
-            self.terminou.emit(False, str(exc))
-        except Exception as exc:  # erro de SQL/execução
-            if con is not None:
-                try:
-                    con.rollback()
-                except Exception:
-                    pass
-            self.terminou.emit(False, f"Erro na execução: {exc}")
         finally:
             if con is not None:
                 try:
@@ -175,18 +159,83 @@ class ExecucaoWorker(QThread):
                 except Exception:
                     pass
 
+    def run(self) -> None:
+        total = len(self._stmts)
+        t0 = time.monotonic()
+        if not self._fazer_backup():
+            return
+        if total == 0:
+            self.terminou.emit(True, "Nada a executar.")
+            return
+
+        # particiona round-robin (ordem é irrelevante); nº de workers limitado
+        # ao total de lançamentos
+        n = min(self._n_workers, total)
+        particoes = [self._stmts[i::n] for i in range(n)]
+        self.mensagem.emit(
+            f"Executando {total} lançamento(s) em {n} conexão(ões) paralela(s)…"
+        )
+
+        threads = [
+            threading.Thread(target=self._rodar_particao, args=(p,), daemon=True)
+            for p in particoes
+        ]
+        for t in threads:
+            t.start()
+
+        stats_con = None
+        try:
+            stats_con = conectar(self._cfg)
+        except Exception:
+            stats_con = None
+
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.3)
+            with self._lock:
+                feito = self._feito
+            self.progresso.emit(feito, total, time.monotonic() - t0)
+            if stats_con is not None:
+                self.estatisticas.emit(_coletar_stats(stats_con))
+
+        for t in threads:
+            t.join()
+        if stats_con is not None:
+            try:
+                self.estatisticas.emit(_coletar_stats(stats_con))
+                stats_con.close()
+            except Exception:
+                pass
+
+        elapsed = time.monotonic() - t0
+        if self._erro is not None:
+            self.terminou.emit(
+                False, f"{self._erro} (partições sem commit sofreram rollback)."
+            )
+        elif self._cancelar:
+            self.terminou.emit(
+                False,
+                f"Cancelado após {self._feito} de {total} "
+                "(partições sem commit sofreram rollback).",
+            )
+        else:
+            self.progresso.emit(total, total, elapsed)
+            self.terminou.emit(
+                True, f"Concluído: {total} lançamento(s) em {elapsed:.1f}s "
+                f"({n} conexões)."
+            )
+
 
 class ExecucaoDialog(QDialog):
     def __init__(self, cfg: ConexaoConfig, statements: list[str],
                  commit_interval: int, backup_path: str | None = None,
-                 parent=None):
+                 n_workers: int = 4, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Executar no banco")
         self.resize(620, 560)
         self._total = len(statements)
         self._t0 = time.monotonic()
         self._worker = ExecucaoWorker(
-            cfg, statements, commit_interval, backup_path, self
+            cfg, statements, commit_interval, backup_path, n_workers, self
         )
         self._build_ui()
         if backup_path:
