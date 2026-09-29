@@ -38,6 +38,7 @@ from .core import (
     build_date_str,
     build_script,
     comparar_estoque,
+    generate_bulk_statements,
     generate_sql_statements,
     generate_zero_statements,
     read_many,
@@ -47,6 +48,7 @@ from .core import (
 from .db import (
     DBError,
     conectar,
+    estoque_e_preco_todos,
     estoque_na_data,
     listar_produtos_ativos,
     listar_todos_produtos,
@@ -196,6 +198,16 @@ class KardexWindow(QWidget):
             "(consulta o banco)"
         )
         raiz.addWidget(self.pular_iguais_chk)
+
+        self.lote_chk = QCheckBox(
+            "Modo zerar tudo e recontar (inserts em lote, rápido; sequencial)"
+        )
+        self.lote_chk.setToolTip(
+            "Zera o estoque de TODOS os produtos na data (1s antes) e relança a "
+            "contagem como entrada. Usa INSERTs brutos + recompute por produto, "
+            "em vez da procedure. Roda sequencial (a ordem importa)."
+        )
+        raiz.addWidget(self.lote_chk)
 
         self.pacote_chk = QCheckBox(
             "Gerar pacote .bat/.ps1 para rodar direto no isql (mais rápido que "
@@ -405,6 +417,14 @@ class KardexWindow(QWidget):
         time_part = self.time_edit.time().toString("HH:mm:ss")
         return build_date_str(date_part, time_part)
 
+    def _build_zero_date_str(self) -> str:
+        """1 segundo antes da data-base — usado no modo lote para o zeramento
+        vir antes da contagem no recompute (sem empate de data/hora)."""
+        from PySide6.QtCore import QDateTime
+
+        dt = QDateTime(self.date_edit.date(), self.time_edit.time()).addSecs(-1)
+        return dt.toString("yyyy-MM-dd HH:mm:ss")
+
     def _generate_sql(self) -> None:
         self.log.clear()
 
@@ -512,6 +532,9 @@ class KardexWindow(QWidget):
         e (se marcado) zerar os não contados. Consulta o banco só quando algum
         desses filtros está ativo (ou `forcar_banco`). Devolve (statements, info)
         ou None se o usuário cancelar / houver erro."""
+        if self.lote_chk.isChecked():
+            return self._preparar_lote(agregadas, history, date_str)
+
         precisa = (
             forcar_banco
             or self.zerar_chk.isChecked()
@@ -519,7 +542,8 @@ class KardexWindow(QWidget):
             or self.pular_iguais_chk.isChecked()
         )
         existentes = list(agregadas)
-        info = {"contados": len(existentes), "fora": 0, "iguais": 0, "zerados": 0}
+        info = {"contados": len(existentes), "fora": 0, "iguais": 0,
+                "zerados": 0, "ja_zerados": 0}
 
         if precisa:
             if self._db_config is None or not self._db_config.database.strip():
@@ -536,16 +560,45 @@ class KardexWindow(QWidget):
             try:
                 conn = conectar(self._db_config)
                 produtos = set(listar_todos_produtos(conn))
-                ativos = (
-                    listar_produtos_ativos(conn)
-                    if self.zerar_chk.isChecked() else set()
-                )
-                est = (
-                    estoque_na_data(
+
+                # pula códigos que não existem em PRODUTOS
+                antes = len(existentes)
+                existentes = [r for r in existentes if r.produtos_id in produtos]
+                info["fora"] = antes - len(existentes)
+
+                # produtos contados (e existentes) — nunca são zerados, mesmo
+                # os pulados por já estarem iguais
+                contados_ids = {r.produtos_id for r in existentes}
+
+                # pula itens cujo estoque NA DATA (anterior) já bate com a contagem
+                if self.pular_iguais_chk.isChecked():
+                    est = estoque_na_data(
                         conn, [r.produtos_id for r in existentes], date_str
                     )
-                    if self.pular_iguais_chk.isChecked() else {}
-                )
+                    antes = len(existentes)
+                    existentes = [
+                        r for r in existentes
+                        if round(r.quantidade, 5)
+                        != round(est.get(r.produtos_id, 0.0), 5)
+                    ]
+                    info["iguais"] = antes - len(existentes)
+
+                info["contados"] = len(existentes)
+                statements = generate_sql_statements(existentes, history, date_str)
+
+                if self.zerar_chk.isChecked():
+                    ativos = listar_produtos_ativos(conn)
+                    nao_contados = sorted(ativos - contados_ids)
+                    # não zera de novo quem já está zerado na data
+                    est_zero = estoque_na_data(conn, nao_contados, date_str)
+                    a_zerar = [
+                        pid for pid in nao_contados
+                        if round(est_zero.get(pid, 0.0), 5) != 0
+                    ]
+                    info["ja_zerados"] = len(nao_contados) - len(a_zerar)
+                    zero = generate_zero_statements(a_zerar, history, date_str)
+                    statements += zero
+                    info["zerados"] = len(zero)
             except DBError as exc:
                 QMessageBox.critical(self, "Erro no banco", str(exc))
                 self._set_status("Falha ao consultar o banco.", role="erro")
@@ -557,35 +610,58 @@ class KardexWindow(QWidget):
                     except Exception:
                         pass
 
-            # pula códigos que não existem em PRODUTOS
-            antes = len(existentes)
-            existentes = [r for r in existentes if r.produtos_id in produtos]
-            info["fora"] = antes - len(existentes)
-
-            # pula itens cujo estoque na data já bate com a contagem
-            if self.pular_iguais_chk.isChecked():
-                antes = len(existentes)
-                existentes = [
-                    r for r in existentes
-                    if round(r.quantidade, 5)
-                    != round(est.get(r.produtos_id, 0.0), 5)
-                ]
-                info["iguais"] = antes - len(existentes)
-
-            info["contados"] = len(existentes)
-            statements = generate_sql_statements(existentes, history, date_str)
-
-            if self.zerar_chk.isChecked():
-                nao_contados = sorted(
-                    ativos - {r.produtos_id for r in existentes}
-                )
-                zero = generate_zero_statements(nao_contados, history, date_str)
-                statements += zero
-                info["zerados"] = len(zero)
             return statements, info
 
         statements = generate_sql_statements(existentes, history, date_str)
         return statements, info
+
+    def _preparar_lote(self, agregadas, history, date_str):
+        """Modo lote: zera TODOS os produtos (1s antes da data) e relança a
+        contagem, com INSERTs brutos + recompute por produto."""
+        if self._db_config is None or not self._db_config.database.strip():
+            dialog = ConexaoDialog(self, self._db_config)
+            if not dialog.exec():
+                QMessageBox.information(
+                    self, "Cancelado", "Conexão não informada — nada foi gerado."
+                )
+                return None
+            self._db_config = dialog.config()
+
+        zero_dt = self._build_zero_date_str()
+        conn = None
+        try:
+            conn = conectar(self._db_config)
+            produtos = set(listar_todos_produtos(conn))
+            dados = estoque_e_preco_todos(conn, zero_dt)
+        except DBError as exc:
+            QMessageBox.critical(self, "Erro no banco", str(exc))
+            self._set_status("Falha ao consultar o banco.", role="erro")
+            return None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        existentes = [r for r in agregadas if r.produtos_id in produtos]
+        fora = len(agregadas) - len(existentes)
+        contagem = {r.produtos_id: r.quantidade for r in existentes}
+        estoque = {pid: v[0] for pid, v in dados.items()}
+        preco = {pid: v[1] for pid, v in dados.items()}
+
+        stmts, binfo = generate_bulk_statements(
+            contagem, estoque, preco, history, date_str, zero_dt
+        )
+        info = {
+            "contados": binfo["contados"],
+            "fora": fora,
+            "iguais": 0,
+            "zerados": binfo["zerados"],
+            "ja_zerados": 0,
+            "lote": True,
+        }
+        return stmts, info
 
     @staticmethod
     def _resumo(info: dict, unidas: int, issues: int, pacote_dir=None) -> str:
@@ -596,6 +672,8 @@ class KardexWindow(QWidget):
             msg += f" {info['zerados']} item(ns) zerado(s)."
         if info.get("iguais"):
             msg += f" {info['iguais']} já igual(is) pulado(s)."
+        if info.get("ja_zerados"):
+            msg += f" {info['ja_zerados']} já zerado(s) ignorado(s)."
         if info.get("fora"):
             msg += f" {info['fora']} fora do banco pulado(s)."
         if issues:
@@ -723,9 +801,11 @@ class KardexWindow(QWidget):
             if not backup_path.lower().endswith(".fbk"):
                 backup_path += ".fbk"
 
+        # o modo lote roda sequencial (a ordem zero→contagem→recompute importa)
+        n_workers = 1 if self.lote_chk.isChecked() else self.workers_spin.value()
         ExecucaoDialog(
             self._db_config, statements, self.commit_spin.value(),
-            backup_path, self.workers_spin.value(), self
+            backup_path, n_workers, self
         ).exec()
         self._set_status(f"Execução no banco: {resumo}", role="ok")
 

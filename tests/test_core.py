@@ -188,6 +188,41 @@ def test_comparar_estoque_arredonda_5_casas():
     assert r.iguais and not r.divergentes
 
 
+def test_generate_bulk_statements_zera_tudo_e_reconta():
+    from kardex_app.core import generate_bulk_statements
+
+    contagem = {1: 15.0, 2: 0.0}          # produto 1 contado 15, produto 2 contado 0
+    estoque = {1: 10.0, 2: 5.0, 3: 8.0}   # 3 não está na contagem
+    preco = {1: 2.0, 2: 3.0, 3: 4.0}
+    stmts, info = generate_bulk_statements(
+        contagem, estoque, preco, "AJUSTE",
+        "2026-09-29 10:00:00", "2026-09-29 09:59:59",
+    )
+    txt = "\n".join(stmts)
+    # zera os 3 produtos com estoque (1, 2, 3) em 09:59:59
+    assert info["zerados"] == 3
+    assert txt.count("INSERT INTO KARDEX") == 3 + 1  # 3 zeros + 1 entrada (prod 1)
+    # produto 1: entrada de 15 na data-base
+    assert "'2026-09-29 10:00:00'" in txt and "15" in txt
+    assert info["contados"] == 1  # só o produto 1 (o 2 foi contado 0)
+    # recompute a partir do zero_dt para cada afetado (1, 2, 3)
+    assert txt.count("KARDEX_RECOMPUTA") == 3
+    assert "'2026-09-29 09:59:59'" in txt
+
+
+def test_generate_bulk_statements_estoque_zero_nao_zera():
+    from kardex_app.core import generate_bulk_statements
+
+    # produto sem estoque anterior não recebe movimento de zeramento
+    stmts, info = generate_bulk_statements(
+        {1: 5.0}, {1: 0.0}, {1: 2.0}, "X",
+        "2026-09-29 10:00:00", "2026-09-29 09:59:59",
+    )
+    assert info["zerados"] == 0
+    # só a entrada da contagem + 1 recompute
+    assert "\n".join(stmts).count("INSERT INTO KARDEX") == 1
+
+
 def test_generate_zero_statements():
     from kardex_app.core import generate_zero_statements
 

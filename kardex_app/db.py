@@ -143,6 +143,37 @@ def estoque_disponivel(conn, produtos_ids) -> dict:
     return out
 
 
+def estoque_e_preco_todos(conn, data_base: str) -> dict:
+    """Para TODOS os produtos: estoque anterior a `data_base` (KARDEX) e
+    PRODUTO_PRECO_CUSTO (PRODUTOS). Base para o modo "zerar tudo e recontar"
+    com inserts em lote. Devolve {produtos_id: (estoque, preco_custo)} —
+    produtos sem movimento têm estoque 0."""
+    cur = conn.cursor()
+    out: dict[int, tuple] = {}
+    try:
+        # preço de custo de todos os produtos
+        cur.execute(
+            "SELECT PRODUTOS_ID, PRODUTO_PRECO_CUSTO FROM PRODUTOS"
+        )
+        for pid, preco in cur.fetchall():
+            out[int(pid)] = (0.0, float(preco) if preco is not None else 0.0)
+        # estoque anterior à data (último KARDEX_NOVO_ESTOQUE por ORDEM antes da data)
+        cur.execute(
+            "SELECT K.PRODUTOS_ID, K.KARDEX_NOVO_ESTOQUE FROM KARDEX K "
+            "WHERE K.KARDEX_DATA_HORA < ? AND K.KARDEX_ORDEM = "
+            "(SELECT MAX(K2.KARDEX_ORDEM) FROM KARDEX K2 "
+            "WHERE K2.PRODUTOS_ID = K.PRODUTOS_ID AND K2.KARDEX_DATA_HORA < ?)",
+            [data_base, data_base],
+        )
+        for pid, est in cur.fetchall():
+            pid = int(pid)
+            preco = out.get(pid, (0.0, 0.0))[1]
+            out[pid] = (float(est) if est is not None else 0.0, preco)
+    except Exception as exc:
+        raise DBError(f"Falha ao consultar estoque/preço: {exc}") from exc
+    return out
+
+
 def listar_todos_produtos(conn) -> list[int]:
     """Todos os PRODUTOS_ID, ordenados. Base para o recompute com progresso
     (um KARDEX_RECOMPUTA por produto, em lotes)."""

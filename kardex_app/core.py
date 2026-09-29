@@ -385,6 +385,84 @@ def generate_sql_statements(
     return statements
 
 
+# ------------------------------------------------------------------ modo lote
+# Origem 5 = "Alteração Manual/Estoque Inicial" (mesma da procedure).
+KARDEX_ORIGEM_AJUSTE = 5
+
+
+def _fmt_moeda(v: float) -> str:
+    return f"{round(float(v), 2):.2f}"
+
+
+def _insert_kardex(tipo: int, dt: str, history_sql: str, pid: int,
+                   qtd: float, preco: float, total: float) -> str:
+    """Um INSERT bruto no KARDEX, equivalente ao que a procedure faz.
+    KARDEX_ID vem da trigger (NULL); ORDEM/ESTOQUE_ANTERIOR/NOVO_ESTOQUE são
+    recomputados depois pela KARDEX_RECOMPUTA."""
+    return (
+        "INSERT INTO KARDEX (KARDEX_TIPO_LANCAMENTO, KARDEX_ORIGEM, KARDEX_ORDEM, "
+        "KARDEX_DATA_HORA, KARDEX_HISTORICO, PRODUTOS_ID, KARDEX_ESTOQUE_ANTERIOR, "
+        "KARDEX_QUANTIDADE, KARDEX_PRECO, KARDEX_TOTAL, KARDEX_NOVO_ESTOQUE) VALUES ("
+        f"{tipo}, {KARDEX_ORIGEM_AJUSTE}, -1, '{dt}', '{history_sql}', {int(pid)}, "
+        f"0, {format_quantidade(qtd)}, {_fmt_moeda(preco)}, {_fmt_moeda(total)}, 0);"
+    )
+
+
+def generate_bulk_statements(
+    contagem: dict,
+    estoque: dict,
+    preco: dict,
+    history: str,
+    base_dt: str,
+    zero_dt: str,
+) -> tuple[list[str], dict]:
+    """Modo "zerar tudo e recontar" com INSERTs em lote (rápido).
+
+    - `contagem`: {produtos_id: quantidade contada} (já agregada, só existentes).
+    - `estoque`: {produtos_id: estoque anterior a `zero_dt`} para TODOS os
+      produtos (ausente = 0).
+    - `preco`: {produtos_id: PRODUTO_PRECO_CUSTO}.
+    - `zero_dt`: 1s antes de `base_dt` — garante que o zeramento venha antes da
+      contagem no recompute, sem ambiguidade de mesma data/hora.
+
+    Fase 1: zera (em `zero_dt`) todo produto com estoque != 0. Fase 2: lança a
+    contagem (em `base_dt`) como entrada a partir de 0. Recompute uma vez por
+    produto afetado, a partir de `zero_dt`. Replica a lógica da procedure
+    (preço = custo, entrada/saída). Devolve (statements, info)."""
+    hist = escape_sql_text(history.strip().upper())
+    stmts: list[str] = []
+    afetados: set[int] = set()
+    info = {"zerados": 0, "contados": 0}
+
+    # Fase 1 — zerar tudo que tem estoque
+    for pid, est in estoque.items():
+        if round(float(est), QUANTIDADE_SCALE) == 0:
+            continue
+        p = float(preco.get(pid, 0.0))
+        if est > 0:  # saída para chegar a zero
+            tipo, qtd, total = 1, -est, p * est
+        else:        # estoque negativo: entrada para chegar a zero
+            tipo, qtd, total = 0, -est, p * (-est)
+        stmts.append(_insert_kardex(tipo, zero_dt, hist, pid, qtd, p, total))
+        afetados.add(int(pid))
+        info["zerados"] += 1
+
+    # Fase 2 — lançar a contagem como entrada a partir de zero
+    for pid, qty in contagem.items():
+        afetados.add(int(pid))
+        if round(float(qty), QUANTIDADE_SCALE) == 0:
+            continue  # fica em zero pela fase 1 (ou já era 0)
+        p = float(preco.get(pid, 0.0))
+        stmts.append(_insert_kardex(0, base_dt, hist, pid, qty, p, p * qty))
+        info["contados"] += 1
+
+    # Recompute uma vez por produto afetado, cobrindo zero (zero_dt) e contagem
+    for pid in sorted(afetados):
+        stmts.append(f"EXECUTE PROCEDURE KARDEX_RECOMPUTA({pid}, '{zero_dt}');")
+
+    return stmts, info
+
+
 @dataclass
 class ComparacaoResultado:
     iguais: list = field(default_factory=list)        # [(pid, valor)]

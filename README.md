@@ -157,6 +157,23 @@ independentemente do idioma da conexão. Os lançamentos saem ordenados por
 código. Não há bloco de recompute separado: a própria `KARDEX_ALTERA_QUANTIDADE`
 recomputa o estoque do produto ao final.
 
+## Modo "zerar tudo e recontar" (inserts em lote)
+
+Além do modo padrão (ajuste por delta via `KARDEX_ALTERA_QUANTIDADE`), há o
+checkbox **Modo zerar tudo e recontar**. Nele o app:
+
+- **zera** o estoque de **todos** os produtos com estoque ≠ 0 na data, com um
+  INSERT bruto no `KARDEX` **1 segundo antes** da data informada;
+- **relança a contagem** como entrada a partir de 0, na data-base exata;
+- **recomputa** uma vez cada produto afetado (a partir do instante do zero).
+
+Usa INSERTs em lote em vez de chamar a procedure por item (mais rápido) e
+replica a lógica dela (preço = `PRODUTO_PRECO_CUSTO`, entrada/saída, origem 5).
+O offset de 1 segundo garante que o zeramento venha antes da contagem no
+recompute. Roda **sequencial** (a ordem importa) e sempre com **backup** antes.
+Por fazer INSERT direto, valide num backup/base de teste antes de usar em
+produção.
+
 ## Conferir resultado
 
 Depois de aplicar o ajuste, o botão **Conferir resultado…** compara a contagem
