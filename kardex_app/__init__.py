@@ -1,0 +1,1 @@
+"""Ferramenta de importação de contagem de estoque para o KARDEX."""
