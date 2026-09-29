@@ -159,26 +159,29 @@ def _lotes(seq: list, tamanho: int) -> Iterable[list]:
         yield seq[i : i + tamanho]
 
 
-def estoque_na_data(conn, produtos_ids, data_base: str) -> dict:
+def estoque_na_data(conn, produtos_ids, data_base: str,
+                    inclusive: bool = False) -> dict:
     """Estoque de cada produto **na data-base** (KARDEX_NOVO_ESTOQUE do último
-    movimento anterior a `data_base`), usando a mesma regra da procedure
-    KARDEX_ALTERA_QUANTIDADE (último por KARDEX_ORDEM antes da data). Produtos
-    sem movimento anterior ficam de fora do dict (o chamador trata como 0).
+    movimento por KARDEX_ORDEM até a data). Produtos sem movimento ficam de fora
+    do dict (o chamador trata como 0).
 
-    Serve para pular itens cujo estoque **naquele momento** já bate com a
-    contagem — respeitando que o sistema pode ter tido movimento depois."""
+    `inclusive=False` (`<`, padrão) devolve o estoque **anterior** ao momento —
+    mesma regra da procedure KARDEX_ALTERA_QUANTIDADE (usada para pular itens que
+    já batem). `inclusive=True` (`<=`) inclui o lançamento feito exatamente na
+    data — usado na conferência pós-ajuste, para enxergar o resultado."""
     ids = [int(p) for p in produtos_ids]
     if not ids:
         return {}
+    op = "<=" if inclusive else "<"
     cur = conn.cursor()
     out: dict[int, float] = {}
     for lote in _lotes(ids, CHUNK):
         marcadores = ", ".join(["?"] * len(lote))
         sql = (
             "SELECT K.PRODUTOS_ID, K.KARDEX_NOVO_ESTOQUE FROM KARDEX K "
-            f"WHERE K.PRODUTOS_ID IN ({marcadores}) AND K.KARDEX_DATA_HORA < ? "
+            f"WHERE K.PRODUTOS_ID IN ({marcadores}) AND K.KARDEX_DATA_HORA {op} ? "
             "AND K.KARDEX_ORDEM = (SELECT MAX(K2.KARDEX_ORDEM) FROM KARDEX K2 "
-            "WHERE K2.PRODUTOS_ID = K.PRODUTOS_ID AND K2.KARDEX_DATA_HORA < ?)"
+            f"WHERE K2.PRODUTOS_ID = K.PRODUTOS_ID AND K2.KARDEX_DATA_HORA {op} ?)"
         )
         try:
             cur.execute(sql, list(lote) + [data_base, data_base])

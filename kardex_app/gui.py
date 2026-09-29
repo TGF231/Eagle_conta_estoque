@@ -47,7 +47,6 @@ from .core import (
 from .db import (
     DBError,
     conectar,
-    estoque_disponivel,
     estoque_na_data,
     listar_produtos_ativos,
     listar_todos_produtos,
@@ -621,6 +620,7 @@ class KardexWindow(QWidget):
         agregadas = sorted(
             aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
         )
+        date_str = self._build_date_str()
 
         if self._db_config is None or not self._db_config.database.strip():
             dialog = ConexaoDialog(self, self._db_config)
@@ -631,7 +631,12 @@ class KardexWindow(QWidget):
         conn = None
         try:
             conn = conectar(self._db_config)
-            disp = estoque_disponivel(conn, [r.produtos_id for r in agregadas])
+            # estoque NA DATA da contagem (inclui o lançamento feito nessa data),
+            # não o estoque atual — movimentos posteriores não interferem
+            est = estoque_na_data(
+                conn, [r.produtos_id for r in agregadas], date_str,
+                inclusive=True,
+            )
         except DBError as exc:
             QMessageBox.critical(self, "Erro no banco", str(exc))
             return
@@ -642,6 +647,8 @@ class KardexWindow(QWidget):
                 except Exception:
                     pass
 
+        # produto sem movimento até a data = estoque 0 naquele momento
+        disp = {r.produtos_id: est.get(r.produtos_id, 0.0) for r in agregadas}
         comp = comparar_estoque(agregadas, disp)
         ComparacaoDialog(comp, self).exec()
         self._set_status(

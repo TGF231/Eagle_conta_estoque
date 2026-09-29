@@ -160,10 +160,11 @@ recomputa o estoque do produto ao final.
 ## Conferir resultado
 
 Depois de aplicar o ajuste, o botão **Conferir resultado…** compara a contagem
-com o `PRODUTO_ESTOQUE_DISPONIVEL` atual da tabela `PRODUTOS` e lista, numa
-tabela, o que ficou **OK**, **divergente** (mostrando contado × disponível e a
-diferença) ou com **produto ausente**. Útil para validar o estoque final após a
-execução.
+com o **estoque na data/hora selecionada** (o `KARDEX_NOVO_ESTOQUE` até aquela
+data, incluindo o lançamento do ajuste) — **não** o estoque atual, para que
+movimentos posteriores à contagem não gerem falso conflito. Lista, numa tabela,
+o que ficou **OK** ou **divergente** (contado × estoque na data × diferença).
+Produto sem movimento até a data conta como estoque 0.
 
 ## Executar no banco (direto do app)
 

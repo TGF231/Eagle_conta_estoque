@@ -52,7 +52,7 @@ class ComparacaoDialog(QDialog):
         self.tabela = QTableWidget()
         self.tabela.setColumnCount(5)
         self.tabela.setHorizontalHeaderLabels(
-            ["Produto", "Contado", "Disponível", "Diferença", "Status"]
+            ["Produto", "Contado", "Estoque na data", "Diferença", "Status"]
         )
         self.tabela.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tabela.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
