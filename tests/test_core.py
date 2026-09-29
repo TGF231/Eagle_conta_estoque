@@ -164,6 +164,30 @@ def test_build_script_vazio():
     assert build_script([]) == ""
 
 
+def test_comparar_estoque_classifica():
+    from kardex_app.core import ParsedRow, comparar_estoque
+
+    rows = [
+        ParsedRow(0, 1, 10.0),   # igual
+        ParsedRow(0, 2, 5.0),    # divergente (disp 7)
+        ParsedRow(0, 3, 4.0),    # ausente (sem estoque no dict)
+    ]
+    disp = {1: 10.0, 2: 7.0}
+    r = comparar_estoque(rows, disp)
+    assert r.iguais == [(1, 10.0)]
+    assert r.divergentes == [(2, 5.0, 7.0)]
+    assert r.ausentes == [3]
+    assert r.total == 3
+
+
+def test_comparar_estoque_arredonda_5_casas():
+    from kardex_app.core import ParsedRow, comparar_estoque
+
+    # diferença abaixo da 5ª casa conta como igual (NUMERIC(14,5))
+    r = comparar_estoque([ParsedRow(0, 1, 10.000001)], {1: 10.0})
+    assert r.iguais and not r.divergentes
+
+
 def test_generate_zero_statements():
     from kardex_app.core import generate_zero_statements
 

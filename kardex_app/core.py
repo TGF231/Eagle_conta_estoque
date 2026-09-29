@@ -385,6 +385,37 @@ def generate_sql_statements(
     return statements
 
 
+@dataclass
+class ComparacaoResultado:
+    iguais: list = field(default_factory=list)        # [(pid, valor)]
+    divergentes: list = field(default_factory=list)   # [(pid, contado, disponivel)]
+    ausentes: list = field(default_factory=list)      # [pid] sem estoque no dict
+
+    @property
+    def total(self) -> int:
+        return len(self.iguais) + len(self.divergentes) + len(self.ausentes)
+
+
+def comparar_estoque(
+    rows: list[ParsedRow], disponivel: dict
+) -> ComparacaoResultado:
+    """Compara a quantidade contada de cada produto com o
+    PRODUTO_ESTOQUE_DISPONIVEL atual. Classifica em iguais, divergentes (com os
+    dois valores) e ausentes (produto sem estoque informado no dict)."""
+    r = ComparacaoResultado()
+    for row in rows:
+        pid = row.produtos_id
+        if pid not in disponivel:
+            r.ausentes.append(pid)
+        elif round(row.quantidade, QUANTIDADE_SCALE) == round(
+            disponivel[pid], QUANTIDADE_SCALE
+        ):
+            r.iguais.append((pid, row.quantidade))
+        else:
+            r.divergentes.append((pid, row.quantidade, disponivel[pid]))
+    return r
+
+
 def generate_zero_statements(
     produtos_ids: Iterable[int], history: str, date_str: str
 ) -> list[str]:

@@ -157,6 +157,14 @@ independentemente do idioma da conexão. Os lançamentos saem ordenados por
 código. Não há bloco de recompute separado: a própria `KARDEX_ALTERA_QUANTIDADE`
 recomputa o estoque do produto ao final.
 
+## Conferir resultado
+
+Depois de aplicar o ajuste, o botão **Conferir resultado…** compara a contagem
+com o `PRODUTO_ESTOQUE_DISPONIVEL` atual da tabela `PRODUTOS` e lista, numa
+tabela, o que ficou **OK**, **divergente** (mostrando contado × disponível e a
+diferença) ou com **produto ausente**. Útil para validar o estoque final após a
+execução.
+
 ## Executar no banco (direto do app)
 
 Depois de confirmar as colunas, o botão **Executar no banco…** roda os

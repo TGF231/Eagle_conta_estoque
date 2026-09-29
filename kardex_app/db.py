@@ -120,6 +120,29 @@ def listar_produtos_ativos(conn) -> set[int]:
         raise DBError(f"Falha ao listar produtos ativos: {exc}") from exc
 
 
+def estoque_disponivel(conn, produtos_ids) -> dict:
+    """PRODUTO_ESTOQUE_DISPONIVEL atual de cada produto (tabela PRODUTOS).
+    Base para conferir o resultado final após o ajuste."""
+    ids = [int(p) for p in produtos_ids]
+    if not ids:
+        return {}
+    cur = conn.cursor()
+    out: dict[int, float] = {}
+    for lote in _lotes(ids, CHUNK):
+        marcadores = ", ".join(["?"] * len(lote))
+        sql = (
+            "SELECT PRODUTOS_ID, PRODUTO_ESTOQUE_DISPONIVEL FROM PRODUTOS "
+            f"WHERE PRODUTOS_ID IN ({marcadores})"
+        )
+        try:
+            cur.execute(sql, list(lote))
+            for pid, est in cur.fetchall():
+                out[int(pid)] = float(est) if est is not None else 0.0
+        except Exception as exc:
+            raise DBError(f"Falha ao consultar estoque disponível: {exc}") from exc
+    return out
+
+
 def listar_todos_produtos(conn) -> list[int]:
     """Todos os PRODUTOS_ID, ordenados. Base para o recompute com progresso
     (um KARDEX_RECOMPUTA por produto, em lotes)."""
@@ -134,6 +157,36 @@ def listar_todos_produtos(conn) -> list[int]:
 def _lotes(seq: list, tamanho: int) -> Iterable[list]:
     for i in range(0, len(seq), tamanho):
         yield seq[i : i + tamanho]
+
+
+def estoque_na_data(conn, produtos_ids, data_base: str) -> dict:
+    """Estoque de cada produto **na data-base** (KARDEX_NOVO_ESTOQUE do último
+    movimento anterior a `data_base`), usando a mesma regra da procedure
+    KARDEX_ALTERA_QUANTIDADE (último por KARDEX_ORDEM antes da data). Produtos
+    sem movimento anterior ficam de fora do dict (o chamador trata como 0).
+
+    Serve para pular itens cujo estoque **naquele momento** já bate com a
+    contagem — respeitando que o sistema pode ter tido movimento depois."""
+    ids = [int(p) for p in produtos_ids]
+    if not ids:
+        return {}
+    cur = conn.cursor()
+    out: dict[int, float] = {}
+    for lote in _lotes(ids, CHUNK):
+        marcadores = ", ".join(["?"] * len(lote))
+        sql = (
+            "SELECT K.PRODUTOS_ID, K.KARDEX_NOVO_ESTOQUE FROM KARDEX K "
+            f"WHERE K.PRODUTOS_ID IN ({marcadores}) AND K.KARDEX_DATA_HORA < ? "
+            "AND K.KARDEX_ORDEM = (SELECT MAX(K2.KARDEX_ORDEM) FROM KARDEX K2 "
+            "WHERE K2.PRODUTOS_ID = K.PRODUTOS_ID AND K2.KARDEX_DATA_HORA < ?)"
+        )
+        try:
+            cur.execute(sql, list(lote) + [data_base, data_base])
+            for pid, est in cur.fetchall():
+                out[int(pid)] = float(est) if est is not None else 0.0
+        except Exception as exc:
+            raise DBError(f"Falha ao consultar estoque na data: {exc}") from exc
+    return out
 
 
 def _normalizar_codigos(codigos: Iterable) -> list[str]:

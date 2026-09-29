@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import tema
+from .comparacao import ComparacaoDialog
 from .conexao import ConexaoDialog
 from .core import (
     COLUNA_ARQUIVO,
@@ -35,13 +36,21 @@ from .core import (
     aggregate_rows,
     build_date_str,
     build_script,
+    comparar_estoque,
     generate_sql_statements,
     generate_zero_statements,
     read_many,
     validate_history,
     validate_rows,
 )
-from .db import DBError, conectar, listar_produtos_ativos, listar_todos_produtos
+from .db import (
+    DBError,
+    conectar,
+    estoque_disponivel,
+    estoque_na_data,
+    listar_produtos_ativos,
+    listar_todos_produtos,
+)
 from .executor import ExecucaoDialog
 from .mapeamento import MapeamentoDialog
 from .packager import write_package
@@ -148,6 +157,10 @@ class KardexWindow(QWidget):
         self.exec_btn.setEnabled(False)
         self.exec_btn.clicked.connect(self._executar_no_banco)
         map_row.addWidget(self.exec_btn)
+        self.conf_btn = QPushButton("Conferir resultado…")
+        self.conf_btn.setEnabled(False)
+        self.conf_btn.clicked.connect(self._conferir_resultado)
+        map_row.addWidget(self.conf_btn)
         map_container = QWidget()
         map_container.setLayout(map_row)
         files_form.addRow("Colunas:", map_container)
@@ -177,6 +190,12 @@ class KardexWindow(QWidget):
             "Zerar estoque dos itens não contados (consulta o banco ao gerar)"
         )
         raiz.addWidget(self.zerar_chk)
+
+        self.pular_iguais_chk = QCheckBox(
+            "Pular itens cujo estoque na data do ajuste já é igual à contagem "
+            "(consulta o banco)"
+        )
+        raiz.addWidget(self.pular_iguais_chk)
 
         self.pacote_chk = QCheckBox(
             "Gerar pacote .bat/.ps1 para rodar direto no isql (mais rápido que "
@@ -276,6 +295,7 @@ class KardexWindow(QWidget):
         self.map_btn.setEnabled(False)
         self.db_btn.setEnabled(False)
         self.exec_btn.setEnabled(False)
+        self.conf_btn.setEnabled(False)
         try:
             self._df = read_many(
                 self._paths, has_header=not self.chk_sem_cabecalho.isChecked()
@@ -306,6 +326,7 @@ class KardexWindow(QWidget):
             self.map_label.setProperty("role", "ok")
             self.db_btn.setEnabled(True)
             self.exec_btn.setEnabled(True)
+            self.conf_btn.setEnabled(True)
         else:
             if not (self._id_col and self._qty_col):
                 self.map_label.setText(
@@ -427,15 +448,19 @@ class KardexWindow(QWidget):
         agregadas = sorted(
             aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
         )
-        count_stmts = generate_sql_statements(agregadas, history, date_str)
 
-        # zeramento dos itens não contados, embutido no mesmo script
-        zero_stmts: list = []
-        if self.zerar_chk.isChecked():
-            zero_stmts = self._statements_zeramento(agregadas, history, date_str)
-            if zero_stmts is None:
-                return  # usuário cancelou / falha de conexão
-        statements = count_stmts + zero_stmts
+        prep = self._preparar_statements(agregadas, history, date_str)
+        if prep is None:
+            return  # usuário cancelou a conexão / falha de banco
+        statements, info = prep
+        if not statements:
+            QMessageBox.warning(
+                self, "Nada a gerar",
+                "Nenhum lançamento restou após os filtros (fora do banco / já "
+                "iguais).",
+            )
+            self._set_status("Nada a gerar.", role="aviso")
+            return
 
         commit_interval = self.commit_spin.value()
         script_content = build_script(statements, commit_interval=commit_interval)
@@ -447,55 +472,151 @@ class KardexWindow(QWidget):
             return
 
         pacote_dir = None
-        pulados = 0
         if self.pacote_chk.isChecked():
-            resultado_pac = self._gerar_pacote(
-                sql_path, agregadas, zero_stmts, history, date_str, commit_interval
-            )
-            if resultado_pac is None:
-                return  # usuário cancelou a conexão / falha
-            pacote_dir, pulados = resultado_pac
+            base = Path(sql_path).with_suffix("")
+            pasta = f"{base}_pacote"
+            try:
+                pacote_dir = write_package(
+                    pasta, self._db_config, statements, lote=commit_interval
+                )
+            except OSError as exc:
+                QMessageBox.critical(self, "Erro ao gerar pacote", str(exc))
+                return
 
-        msg = f"SQL gerado com sucesso: {len(agregadas)} produto(s) contado(s)."
         unidas = len(result.valid_rows) - len(agregadas)
+        self._set_status(
+            self._resumo(info, unidas, len(result.issues), pacote_dir), role="ok"
+        )
+
+    def _preparar_statements(self, agregadas, history, date_str,
+                             forcar_banco: bool = False):
+        """Monta os lançamentos aplicando os filtros que dependem do banco:
+        pular códigos fora de PRODUTOS, pular itens cujo estoque na data já bate
+        e (se marcado) zerar os não contados. Consulta o banco só quando algum
+        desses filtros está ativo (ou `forcar_banco`). Devolve (statements, info)
+        ou None se o usuário cancelar / houver erro."""
+        precisa = (
+            forcar_banco
+            or self.zerar_chk.isChecked()
+            or self.pacote_chk.isChecked()
+            or self.pular_iguais_chk.isChecked()
+        )
+        existentes = list(agregadas)
+        info = {"contados": len(existentes), "fora": 0, "iguais": 0, "zerados": 0}
+
+        if precisa:
+            if self._db_config is None or not self._db_config.database.strip():
+                dialog = ConexaoDialog(self, self._db_config)
+                if not dialog.exec():
+                    QMessageBox.information(
+                        self, "Cancelado",
+                        "Conexão não informada — nada foi gerado.",
+                    )
+                    return None
+                self._db_config = dialog.config()
+
+            conn = None
+            try:
+                conn = conectar(self._db_config)
+                produtos = set(listar_todos_produtos(conn))
+                ativos = (
+                    listar_produtos_ativos(conn)
+                    if self.zerar_chk.isChecked() else set()
+                )
+                est = (
+                    estoque_na_data(
+                        conn, [r.produtos_id for r in existentes], date_str
+                    )
+                    if self.pular_iguais_chk.isChecked() else {}
+                )
+            except DBError as exc:
+                QMessageBox.critical(self, "Erro no banco", str(exc))
+                self._set_status("Falha ao consultar o banco.", role="erro")
+                return None
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+            # pula códigos que não existem em PRODUTOS
+            antes = len(existentes)
+            existentes = [r for r in existentes if r.produtos_id in produtos]
+            info["fora"] = antes - len(existentes)
+
+            # pula itens cujo estoque na data já bate com a contagem
+            if self.pular_iguais_chk.isChecked():
+                antes = len(existentes)
+                existentes = [
+                    r for r in existentes
+                    if round(r.quantidade, 5)
+                    != round(est.get(r.produtos_id, 0.0), 5)
+                ]
+                info["iguais"] = antes - len(existentes)
+
+            info["contados"] = len(existentes)
+            statements = generate_sql_statements(existentes, history, date_str)
+
+            if self.zerar_chk.isChecked():
+                nao_contados = sorted(
+                    ativos - {r.produtos_id for r in existentes}
+                )
+                zero = generate_zero_statements(nao_contados, history, date_str)
+                statements += zero
+                info["zerados"] = len(zero)
+            return statements, info
+
+        statements = generate_sql_statements(existentes, history, date_str)
+        return statements, info
+
+    @staticmethod
+    def _resumo(info: dict, unidas: int, issues: int, pacote_dir=None) -> str:
+        msg = f"OK: {info['contados']} produto(s) contado(s)."
         if unidas > 0:
             msg += f" {unidas} linha(s) unida(s) por código repetido."
-        if zero_stmts:
-            msg += f" {len(zero_stmts)} item(ns) zerado(s)."
-        if pulados:
-            msg += f" {pulados} produto(s) fora do banco pulado(s) no pacote."
-        if result.issues:
-            msg += f" {len(result.issues)} linha(s) ignorada(s)."
+        if info.get("zerados"):
+            msg += f" {info['zerados']} item(ns) zerado(s)."
+        if info.get("iguais"):
+            msg += f" {info['iguais']} já igual(is) pulado(s)."
+        if info.get("fora"):
+            msg += f" {info['fora']} fora do banco pulado(s)."
+        if issues:
+            msg += f" {issues} linha(s) ignorada(s)."
         if pacote_dir:
-            msg += f" Pacote .bat/.ps1 em: {pacote_dir}"
-        self._set_status(msg, role="ok")
+            msg += f" Pacote em: {pacote_dir}"
+        return msg
 
-    def _gerar_pacote(self, sql_path, agregadas, zero_stmts, history, date_str,
-                      lote):
-        """Grava o pacote executável (partes + executar.bat/.ps1 com contador de
-        progresso) numa pasta ao lado do .sql. Consulta o banco para o recompute
-        de todos os produtos e **pula os códigos que não existem em PRODUTOS**
-        (evita erros no isql). Devolve (pasta, qtd_pulados) ou None."""
+    def _conferir_resultado(self) -> None:
+        """Compara a contagem com o PRODUTO_ESTOQUE_DISPONIVEL atual da tabela
+        PRODUTOS e lista as divergências (conferência pós-ajuste)."""
+        if self._df is None or not (self._id_col and self._qty_col):
+            return
+        try:
+            result = validate_rows(self._df, self._id_col, self._qty_col)
+        except FileImportError as exc:
+            QMessageBox.critical(self, "Erro", str(exc))
+            return
+        if not result.valid_rows:
+            QMessageBox.warning(self, "Sem dados", "Nenhuma linha válida.")
+            return
+        agregadas = sorted(
+            aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
+        )
+
         if self._db_config is None or not self._db_config.database.strip():
             dialog = ConexaoDialog(self, self._db_config)
             if not dialog.exec():
-                QMessageBox.information(
-                    self,
-                    "Pacote cancelado",
-                    "Conexão não informada — o pacote .bat/.ps1 não foi gerado. "
-                    "O arquivo .sql foi salvo normalmente.",
-                )
-                return None
+                return
             self._db_config = dialog.config()
 
         conn = None
         try:
             conn = conectar(self._db_config)
-            produtos = listar_todos_produtos(conn)
+            disp = estoque_disponivel(conn, [r.produtos_id for r in agregadas])
         except DBError as exc:
             QMessageBox.critical(self, "Erro no banco", str(exc))
-            self._set_status("Falha ao consultar o banco para o pacote.", role="erro")
-            return None
+            return
         finally:
             if conn is not None:
                 try:
@@ -503,19 +624,13 @@ class KardexWindow(QWidget):
                 except Exception:
                     pass
 
-        existentes_set = set(produtos)
-        existentes = [r for r in agregadas if r.produtos_id in existentes_set]
-        pulados = len(agregadas) - len(existentes)
-        lancamentos = generate_sql_statements(existentes, history, date_str) + zero_stmts
-
-        base = Path(sql_path).with_suffix("")
-        pasta = f"{base}_pacote"
-        try:
-            caminho = write_package(pasta, self._db_config, lancamentos, lote=lote)
-        except OSError as exc:
-            QMessageBox.critical(self, "Erro ao gerar pacote", str(exc))
-            return None
-        return caminho, pulados
+        comp = comparar_estoque(agregadas, disp)
+        ComparacaoDialog(comp, self).exec()
+        self._set_status(
+            f"Conferência: {len(comp.iguais)} OK, {len(comp.divergentes)} "
+            f"divergente(s), {len(comp.ausentes)} ausente(s).",
+            role="erro" if comp.divergentes else "ok",
+        )
 
     def _executar_no_banco(self) -> None:
         """Executa os lançamentos direto no banco (via fdb), com barra de
@@ -541,57 +656,27 @@ class KardexWindow(QWidget):
             aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
         )
 
-        if self._db_config is None or not self._db_config.database.strip():
-            dialog = ConexaoDialog(self, self._db_config)
-            if not dialog.exec():
-                return
-            self._db_config = dialog.config()
-
-        conn = None
-        try:
-            conn = conectar(self._db_config)
-            produtos = set(listar_todos_produtos(conn))
-            ativos = (
-                listar_produtos_ativos(conn)
-                if self.zerar_chk.isChecked()
-                else set()
-            )
-        except DBError as exc:
-            QMessageBox.critical(self, "Erro no banco", str(exc))
+        # força a consulta ao banco para filtrar códigos fora de PRODUTOS
+        # (senão a procedure abortaria) e aplicar os demais filtros marcados
+        prep = self._preparar_statements(
+            agregadas, history, date_str, forcar_banco=True
+        )
+        if prep is None:
             return
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-        existentes = [r for r in agregadas if r.produtos_id in produtos]
-        pulados = len(agregadas) - len(existentes)
-        statements = generate_sql_statements(existentes, history, date_str)
-        zerados = 0
-        if self.zerar_chk.isChecked():
-            nao_contados = sorted(ativos - {r.produtos_id for r in existentes})
-            zero = generate_zero_statements(nao_contados, history, date_str)
-            statements += zero
-            zerados = len(zero)
-
+        statements, info = prep
         if not statements:
             QMessageBox.warning(
                 self, "Nada a executar",
-                "Nenhum lançamento a executar (todos os códigos estão fora do "
-                "banco?).",
+                "Nenhum lançamento restou após os filtros.",
             )
             return
 
-        resumo = (f"{len(existentes)} contado(s)"
-                  + (f", {zerados} zerado(s)" if zerados else "")
-                  + (f", {pulados} fora do banco pulado(s)" if pulados else ""))
+        resumo = self._resumo(info, len(result.valid_rows) - len(agregadas), 0)
         resp = QMessageBox.question(
             self,
             "Executar no banco",
             f"Isto vai ALTERAR o estoque no banco:\n{self._db_config.database}\n\n"
-            f"{len(statements)} lançamento(s) — {resumo}.\n\n"
+            f"{len(statements)} lançamento(s).\n{resumo}\n\n"
             "Recomenda-se um backup antes. Continuar?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -602,48 +687,7 @@ class KardexWindow(QWidget):
         ExecucaoDialog(
             self._db_config, statements, self.commit_spin.value(), self
         ).exec()
-        self._set_status(
-            f"Execução no banco: {len(statements)} lançamento(s) — {resumo}.",
-            role="ok",
-        )
-
-    def _statements_zeramento(self, agregadas, history, date_str):
-        """Consulta o banco e devolve os lançamentos-zero para os produtos
-        ativos que não estão na contagem. Devolve None se o usuário cancelar a
-        conexão ou se houver erro (aborta a geração).
-
-        Reaproveita a conexão já informada na tela de verificação — só pede os
-        dados se ainda não houver conexão configurada."""
-        if self._db_config is None or not self._db_config.database.strip():
-            dialog = ConexaoDialog(self, self._db_config)
-            if not dialog.exec():
-                QMessageBox.information(
-                    self,
-                    "Zeramento cancelado",
-                    "Conexão não informada — o SQL não foi gerado. Desmarque a "
-                    "opção de zerar para gerar apenas a contagem.",
-                )
-                return None
-            self._db_config = dialog.config()
-
-        conn = None
-        try:
-            conn = conectar(self._db_config)
-            ativos = listar_produtos_ativos(conn)
-        except DBError as exc:
-            QMessageBox.critical(self, "Erro no banco", str(exc))
-            self._set_status("Falha ao consultar o banco.", role="erro")
-            return None
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-        contados = {r.produtos_id for r in agregadas}
-        nao_contados = sorted(ativos - contados)
-        return generate_zero_statements(nao_contados, history, date_str)
+        self._set_status(f"Execução no banco: {resumo}", role="ok")
 
 
 def main() -> None:
