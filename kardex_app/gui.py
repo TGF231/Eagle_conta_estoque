@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QTime
@@ -202,6 +203,12 @@ class KardexWindow(QWidget):
             "o IBExpert)"
         )
         raiz.addWidget(self.pacote_chk)
+
+        self.backup_chk = QCheckBox(
+            "Fazer backup do banco (gbak) antes de executar na interface"
+        )
+        self.backup_chk.setChecked(True)
+        raiz.addWidget(self.backup_chk)
 
         commit_row = QHBoxLayout()
         commit_row.setContentsMargins(0, 0, 0, 0)
@@ -684,8 +691,23 @@ class KardexWindow(QWidget):
         if resp != QMessageBox.StandardButton.Yes:
             return
 
+        backup_path = None
+        if self.backup_chk.isChecked():
+            base = Path(self._db_config.database).stem or "banco"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            sugestao = f"{base}_{ts}.fbk"
+            backup_path, _ = QFileDialog.getSaveFileName(
+                self, "Salvar backup (gbak)", sugestao,
+                "Backup Firebird (*.fbk);;Todos os arquivos (*)",
+            )
+            if not backup_path:
+                return  # cancelou o backup → não executa
+            if not backup_path.lower().endswith(".fbk"):
+                backup_path += ".fbk"
+
         ExecucaoDialog(
-            self._db_config, statements, self.commit_spin.value(), self
+            self._db_config, statements, self.commit_spin.value(),
+            backup_path, self
         ).exec()
         self._set_status(f"Execução no banco: {resumo}", role="ok")
 

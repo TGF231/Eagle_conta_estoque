@@ -177,8 +177,13 @@ lançamentos direto no Firebird (via `fdb`), numa thread, sem precisar do
   transação, transações ativas e I/O de páginas — atualizadas a cada COMMIT.
 
 Comita a cada X registros (mesmo campo), tem **Cancelar** (faz rollback do que
-ainda não foi commitado) e pede confirmação antes de alterar o estoque (faça um
-backup antes). Pula códigos fora de `PRODUTOS` e aplica o zeramento se marcado.
+ainda não foi commitado) e pede confirmação antes de alterar o estoque. Pula
+códigos fora de `PRODUTOS` e aplica o zeramento se marcado.
+
+Com **Fazer backup do banco (gbak) antes de executar** marcado (padrão), o app
+gera um `.fbk` com `gbak -b -g` antes dos lançamentos; se o backup falhar, a
+execução é **abortada** e nada é alterado. Requer o `gbak.exe` do Firebird
+instalado na máquina.
 
 ## Pacote executável (isql)
 
