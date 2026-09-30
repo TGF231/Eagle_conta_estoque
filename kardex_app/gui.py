@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QTime
+from PySide6.QtCore import Qt, QDate, QTime
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QPushButton,
     QSpinBox,
     QTimeEdit,
@@ -54,7 +55,7 @@ from .db import (
     listar_produtos_ativos,
     listar_todos_produtos,
 )
-from .executor import ExecucaoDialog
+from .executor import ConferenciaWorker, ExecucaoDialog
 from .mapeamento import MapeamentoDialog
 from .packager import write_package
 from .verificacao import VerificacaoDialog
@@ -733,24 +734,40 @@ class KardexWindow(QWidget):
                 return
             self._db_config = dialog.config()
 
-        conn = None
-        try:
-            conn = conectar(self._db_config)
-            # estoque NA DATA da contagem (inclui o lançamento feito nessa data),
-            # não o estoque atual — movimentos posteriores não interferem
-            est = estoque_na_data(
-                conn, [r.produtos_id for r in agregadas], date_str,
-                inclusive=True,
-            )
-        except DBError as exc:
-            QMessageBox.critical(self, "Erro no banco", str(exc))
+        # consulta o estoque na data em paralelo (só leitura), com progresso
+        ids = [r.produtos_id for r in agregadas]
+        prog = QProgressDialog(
+            "Consultando estoque na data…", "Cancelar", 0, len(ids), self
+        )
+        prog.setWindowTitle("Conferir resultado")
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+
+        worker = ConferenciaWorker(
+            self._db_config, ids, date_str, self.workers_spin.value(), self
+        )
+        estado = {"est": None, "erro": None}
+        direto = Qt.ConnectionType.DirectConnection
+        worker.progresso.connect(lambda feito, total: prog.setValue(feito))
+        worker.concluido.connect(
+            lambda d: estado.__setitem__("est", d), direto
+        )
+        worker.erro.connect(lambda m: estado.__setitem__("erro", m), direto)
+        prog.canceled.connect(worker.cancelar)
+        worker.start()
+        while worker.isRunning():
+            QApplication.processEvents()
+            worker.wait(50)
+        QApplication.processEvents()
+        prog.reset()
+
+        if worker._cancelar:
+            self._set_status("Conferência cancelada.", role="aviso")
             return
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+        if estado["erro"]:
+            QMessageBox.critical(self, "Erro no banco", estado["erro"])
+            return
+        est = estado["est"] or {}
 
         # produto sem movimento até a data = estoque 0 naquele momento
         disp = {r.produtos_id: est.get(r.produtos_id, 0.0) for r in agregadas}

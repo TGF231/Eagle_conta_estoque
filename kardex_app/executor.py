@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .db import ConexaoConfig, DBError, conectar
+from .db import ConexaoConfig, DBError, conectar, estoque_na_data
 from .packager import FB_BIN_CANDIDATES
 
 
@@ -257,6 +257,80 @@ class ExecucaoWorker(QThread):
             if self._falhas:
                 resumo += f", {len(self._falhas)} pulado(s) (veja o log)"
             self.terminou.emit(True, resumo + ".")
+
+
+class ConferenciaWorker(QThread):
+    """Consulta o estoque na data de vários produtos em paralelo (só leitura).
+    Cada thread usa sua própria conexão e um subconjunto dos produtos."""
+    progresso = Signal(int, int)     # feito, total
+    concluido = Signal(object)       # {produtos_id: estoque} (chaves int)
+    erro = Signal(str)
+
+    LOTE = 250
+
+    def __init__(self, cfg: ConexaoConfig, ids: list, date_str: str,
+                 n_workers: int = 4, parent=None):
+        super().__init__(parent)
+        self._cfg = cfg
+        self._ids = list(ids)
+        self._date_str = date_str
+        self._n = max(1, int(n_workers or 1))
+        self._merged: dict = {}
+        self._feito = 0
+        self._erro = None
+        self._cancelar = False
+        self._lock = threading.Lock()
+
+    def cancelar(self) -> None:
+        self._cancelar = True
+
+    def _consultar(self, sub: list) -> None:
+        con = None
+        try:
+            con = conectar(self._cfg)
+            for i in range(0, len(sub), self.LOTE):
+                if self._erro or self._cancelar:
+                    return
+                chunk = sub[i:i + self.LOTE]
+                d = estoque_na_data(con, chunk, self._date_str, inclusive=True)
+                with self._lock:
+                    self._merged.update(d)
+                    self._feito += len(chunk)
+        except Exception as exc:
+            with self._lock:
+                if self._erro is None:
+                    self._erro = str(exc)
+        finally:
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+
+    def run(self) -> None:
+        total = len(self._ids)
+        if total == 0:
+            self.concluido.emit({})
+            return
+        n = min(self._n, total)
+        parts = [self._ids[i::n] for i in range(n)]
+        threads = [
+            threading.Thread(target=self._consultar, args=(p,), daemon=True)
+            for p in parts
+        ]
+        for t in threads:
+            t.start()
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.2)
+            with self._lock:
+                self.progresso.emit(self._feito, total)
+        for t in threads:
+            t.join()
+        if self._erro is not None:
+            self.erro.emit(self._erro)
+        else:
+            self.progresso.emit(total, total)
+            self.concluido.emit(self._merged)
 
 
 class ExecucaoDialog(QDialog):

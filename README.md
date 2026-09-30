@@ -185,6 +185,10 @@ movimentos posteriores à contagem não gerem falso conflito. Lista, numa tabela
 o que ficou **OK** ou **divergente** (contado × estoque na data × diferença).
 Produto sem movimento até a data conta como estoque 0.
 
+A consulta é **paralela** (usa o campo *Conexões paralelas*), com barra de
+progresso e opção de cancelar — bem mais rápida em bases grandes, já que é
+somente leitura.
+
 ## Executar no banco (direto do app)
 
 Depois de confirmar as colunas, o botão **Executar no banco…** roda os
