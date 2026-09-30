@@ -413,6 +413,19 @@ def achatar(units: list) -> list[str]:
     return [s for _, stmts in units for s in stmts]
 
 
+# Data antiga para recomputar toda a cadeia desde o início.
+RECOMPUTA_INICIO = "01.01.0100 00:00:00"
+
+
+def generate_recompute_units(ids, date_str: str) -> list:
+    """Unidades [(pid, [EXECUTE PROCEDURE KARDEX_RECOMPUTA(pid, data)])]."""
+    return [
+        (str(int(p)),
+         [f"EXECUTE PROCEDURE KARDEX_RECOMPUTA({int(p)}, '{date_str}');"])
+        for p in ids
+    ]
+
+
 def generate_bulk_units(
     alvos: dict,
     estoque: dict,

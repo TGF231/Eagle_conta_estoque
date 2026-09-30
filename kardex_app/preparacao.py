@@ -10,8 +10,10 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from .core import (
+    RECOMPUTA_INICIO,
     achatar,
     generate_bulk_units,
+    generate_recompute_units,
     generate_sql_statements,
     generate_zero_statements,
 )
@@ -23,6 +25,8 @@ from .db import (
     estoque_na_data,
     listar_produtos_ativos,
     listar_todos_produtos,
+    pids_do_lancamento,
+    sql_delete_lancamento,
 )
 
 
@@ -108,17 +112,49 @@ def _prep_lote(conn, agregadas, history, date_str, zerar):
 
 
 def preparar_no_banco(cfg: ConexaoConfig, agregadas, history, date_str,
-                      modo_lote: bool, zerar: bool, pular_iguais: bool):
+                      modo_lote: bool, zerar: bool, pular_iguais: bool,
+                      recompute_antes: bool = False):
     """Abre a conexão, monta as unidades e devolve (units, info). Levanta
-    DBError em falha (o chamador trata)."""
+    DBError em falha (o chamador trata). Com `recompute_antes`, inclui em
+    info['pre_units'] o recompute de todos os produtos (desde o início) — para
+    corrigir saldos divergentes antes dos ajustes."""
     conn = None
     try:
         conn = conectar(cfg)
         if modo_lote:
-            return _prep_lote(conn, agregadas, history, date_str, zerar)
-        return _prep_procedure(
-            conn, agregadas, history, date_str, zerar, pular_iguais
-        )
+            units, info = _prep_lote(conn, agregadas, history, date_str, zerar)
+        else:
+            units, info = _prep_procedure(
+                conn, agregadas, history, date_str, zerar, pular_iguais
+            )
+        if recompute_antes:
+            ids = listar_todos_produtos(conn)
+            info["pre_units"] = generate_recompute_units(ids, RECOMPUTA_INICIO)
+        return units, info
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def preparar_desfazer(cfg: ConexaoConfig, date_str: str, history: str):
+    """Localiza os movimentos a desfazer (data/hora + histórico) e monta:
+    pre_units = [DELETE], units = recompute dos produtos afetados. Devolve
+    (pre_units, units, n_afetados)."""
+    conn = None
+    try:
+        conn = conectar(cfg)
+        hist = history.strip().upper()
+        pids = pids_do_lancamento(conn, date_str, hist)
+        if not pids:
+            return [], [], 0
+        delete_sql = sql_delete_lancamento(date_str, hist)
+        pre_units = [(f"Excluir movimentos ({len(pids)} produto(s))",
+                      [delete_sql])]
+        units = generate_recompute_units(pids, date_str)
+        return pre_units, units, len(pids)
     finally:
         if conn is not None:
             try:
@@ -133,10 +169,11 @@ class PreparacaoWorker(QThread):
     erro = Signal(str)
 
     def __init__(self, cfg, agregadas, history, date_str,
-                 modo_lote, zerar, pular_iguais, parent=None):
+                 modo_lote, zerar, pular_iguais, recompute_antes=False,
+                 parent=None):
         super().__init__(parent)
         self._args = (cfg, agregadas, history, date_str,
-                      modo_lote, zerar, pular_iguais)
+                      modo_lote, zerar, pular_iguais, recompute_antes)
 
     def run(self) -> None:
         try:
@@ -148,3 +185,24 @@ class PreparacaoWorker(QThread):
             self.erro.emit(f"Falha ao preparar: {exc}")
             return
         self.concluido.emit(units, info)
+
+
+class DesfazerPrepWorker(QThread):
+    """Roda `preparar_desfazer` numa thread (localiza e monta o DELETE)."""
+    concluido = Signal(object)   # (pre_units, units, n)
+    erro = Signal(str)
+
+    def __init__(self, cfg, date_str, history, parent=None):
+        super().__init__(parent)
+        self._args = (cfg, date_str, history)
+
+    def run(self) -> None:
+        try:
+            pre_units, units, n = preparar_desfazer(*self._args)
+        except DBError as exc:
+            self.erro.emit(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.erro.emit(f"Falha ao localizar lançamentos: {exc}")
+            return
+        self.concluido.emit((pre_units, units, n))

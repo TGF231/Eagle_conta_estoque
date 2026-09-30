@@ -210,6 +210,14 @@ def test_generate_bulk_statements_delta_por_produto():
     assert "'AJUSTE', 2, 0, -2," in txt
 
 
+def test_generate_recompute_units():
+    from kardex_app.core import RECOMPUTA_INICIO, generate_recompute_units
+
+    units = generate_recompute_units([5, 2], RECOMPUTA_INICIO)
+    assert [u[0] for u in units] == ["5", "2"]
+    assert "KARDEX_RECOMPUTA(5, '01.01.0100 00:00:00');" in units[0][1][0]
+
+
 def test_generate_bulk_units_agrupa_por_produto():
     from kardex_app.core import achatar, generate_bulk_units
 

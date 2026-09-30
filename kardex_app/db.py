@@ -181,6 +181,30 @@ def estoque_e_preco_todos(conn, data_base: str) -> dict:
     return out
 
 
+def pids_do_lancamento(conn, data_base: str, history: str) -> list[int]:
+    """PRODUTOS_ID distintos de movimentos gravados na data/hora e com o texto
+    histórico informados — os afetados por um lançamento a desfazer."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT DISTINCT PRODUTOS_ID FROM KARDEX "
+            "WHERE KARDEX_DATA_HORA = ? AND KARDEX_HISTORICO = ?",
+            [data_base, history],
+        )
+        return [int(r[0]) for r in cur.fetchall()]
+    except Exception as exc:
+        raise DBError(f"Falha ao localizar lançamentos: {exc}") from exc
+
+
+def sql_delete_lancamento(data_base: str, history: str) -> str:
+    """DELETE dos movimentos do KARDEX com a data/hora e histórico informados."""
+    h = history.replace("'", "''")
+    return (
+        "DELETE FROM KARDEX "
+        f"WHERE KARDEX_DATA_HORA = '{data_base}' AND KARDEX_HISTORICO = '{h}';"
+    )
+
+
 def listar_todos_produtos(conn) -> list[int]:
     """Todos os PRODUTOS_ID, ordenados. Base para o recompute com progresso
     (um KARDEX_RECOMPUTA por produto, em lotes)."""

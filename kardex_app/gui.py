@@ -48,7 +48,12 @@ from .db import DBError
 from .executor import ConferenciaWorker, ExecucaoDialog
 from .mapeamento import MapeamentoDialog
 from .packager import write_package
-from .preparacao import PreparacaoWorker, preparar_no_banco, preparar_sem_banco
+from .preparacao import (
+    DesfazerPrepWorker,
+    PreparacaoWorker,
+    preparar_no_banco,
+    preparar_sem_banco,
+)
 from .verificacao import VerificacaoDialog
 
 APP_TITULO = "Eagle Contagem de Estoque"
@@ -156,6 +161,13 @@ class KardexWindow(QWidget):
         self.conf_btn.setEnabled(False)
         self.conf_btn.clicked.connect(self._conferir_resultado)
         map_row.addWidget(self.conf_btn)
+        self.desfazer_btn = QPushButton("Desfazer no banco…")
+        self.desfazer_btn.setToolTip(
+            "Exclui do KARDEX os movimentos com a data/hora e o texto histórico "
+            "informados e recomputa os produtos afetados."
+        )
+        self.desfazer_btn.clicked.connect(self._desfazer_no_banco)
+        map_row.addWidget(self.desfazer_btn)
         map_container = QWidget()
         map_container.setLayout(map_row)
         files_form.addRow("Colunas:", map_container)
@@ -207,6 +219,12 @@ class KardexWindow(QWidget):
             "o IBExpert)"
         )
         raiz.addWidget(self.pacote_chk)
+
+        self.recompute_antes_chk = QCheckBox(
+            "Recomputar estoque de todos os itens antes de executar (corrige "
+            "saldos divergentes; mais lento)"
+        )
+        raiz.addWidget(self.recompute_antes_chk)
 
         self.backup_chk = QCheckBox(
             "Fazer backup do banco (gbak) antes de executar na interface"
@@ -688,7 +706,8 @@ class KardexWindow(QWidget):
         worker = PreparacaoWorker(
             self._db_config, agregadas, history, date_str,
             self.lote_chk.isChecked(), self.zerar_chk.isChecked(),
-            self.pular_iguais_chk.isChecked(), self,
+            self.pular_iguais_chk.isChecked(),
+            self.recompute_antes_chk.isChecked(), self,
         )
         estado = {"units": None, "info": None, "erro": None}
         direto = Qt.ConnectionType.DirectConnection
@@ -744,11 +763,89 @@ class KardexWindow(QWidget):
                 backup_path += ".fbk"
 
         n_workers = self.workers_spin.value()
+        pre_units = info.get("pre_units", [])
         ExecucaoDialog(
             self._db_config, units, self.commit_spin.value(),
-            backup_path, n_workers, self
+            backup_path, n_workers, pre_units, "Executar no banco", self
         ).exec()
         self._set_status(f"Execução no banco: {resumo}", role="ok")
+
+    def _desfazer_no_banco(self) -> None:
+        """Desfaz um lançamento: exclui do KARDEX os movimentos com a data/hora
+        e o histórico informados e recomputa os produtos afetados."""
+        history = self.history_edit.text()
+        erro = validate_history(history)
+        if erro:
+            QMessageBox.critical(self, "Erro", erro)
+            return
+        date_str = self._build_date_str()
+
+        resp = QMessageBox.warning(
+            self,
+            "Desfazer no banco",
+            "Ação DESTRUTIVA: vai EXCLUIR do KARDEX todos os movimentos com\n"
+            f"data/hora = {date_str}\ne histórico = “{history.strip().upper()}”,\n"
+            "e recomputar os produtos afetados.\n\nFaça um backup antes. "
+            "Continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+        if not self._garantir_conexao():
+            return
+
+        # localiza os movimentos em thread (pode demorar)
+        prog = QProgressDialog("Localizando lançamentos…", None, 0, 0, self)
+        prog.setWindowTitle("Desfazer no banco")
+        prog.setMinimumDuration(0)
+        prog.setCancelButton(None)
+        prog.setValue(0)
+        worker = DesfazerPrepWorker(self._db_config, date_str, history, self)
+        estado = {"res": None, "erro": None}
+        direto = Qt.ConnectionType.DirectConnection
+        worker.concluido.connect(lambda r: estado.__setitem__("res", r), direto)
+        worker.erro.connect(lambda m: estado.__setitem__("erro", m), direto)
+        worker.start()
+        while worker.isRunning():
+            QApplication.processEvents()
+            worker.wait(50)
+        QApplication.processEvents()
+        prog.reset()
+
+        if estado["erro"]:
+            QMessageBox.critical(self, "Erro no banco", estado["erro"])
+            return
+        pre_units, units, n = estado["res"]
+        if n == 0:
+            QMessageBox.information(
+                self, "Nada a desfazer",
+                "Nenhum movimento encontrado com essa data/hora e histórico.",
+            )
+            return
+
+        backup_path = None
+        if self.backup_chk.isChecked():
+            base = Path(self._db_config.database).stem or "banco"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path, _ = QFileDialog.getSaveFileName(
+                self, "Salvar backup (gbak)", f"{base}_{ts}.fbk",
+                "Backup Firebird (*.fbk);;Todos os arquivos (*)",
+            )
+            if not backup_path:
+                return
+            if not backup_path.lower().endswith(".fbk"):
+                backup_path += ".fbk"
+
+        ExecucaoDialog(
+            self._db_config, units, self.commit_spin.value(),
+            backup_path, self.workers_spin.value(), pre_units,
+            "Desfazer no banco", self,
+        ).exec()
+        self._set_status(
+            f"Desfazer: {n} produto(s) afetado(s) — movimentos excluídos e "
+            "recomputados.", role="ok",
+        )
 
 
 def main() -> None:

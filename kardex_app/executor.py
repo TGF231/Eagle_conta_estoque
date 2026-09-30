@@ -86,11 +86,12 @@ class ExecucaoWorker(QThread):
 
     def __init__(self, cfg: ConexaoConfig, units: list,
                  commit_interval: int, backup_path: str | None = None,
-                 n_workers: int = 4, parent=None):
+                 n_workers: int = 4, pre_units: list | None = None, parent=None):
         super().__init__(parent)
         self._cfg = cfg
         # units: [(rotulo, [sql, ...])] — cada unidade roda isolada (savepoint)
         self._units = units
+        self._pre_units = pre_units or []
         self._commit = max(1, int(commit_interval or 1))
         self._backup_path = backup_path
         self._n_workers = max(1, int(n_workers or 1))
@@ -190,36 +191,19 @@ class ExecucaoWorker(QThread):
                 except Exception:
                     pass
 
-    def run(self) -> None:
-        total = len(self._units)
-        t0 = time.monotonic()
-        if not self._fazer_backup():
+    def _fase(self, unit_list: list, t0: float, total: int, stats_con) -> None:
+        """Executa uma lista de unidades em paralelo (savepoint por unidade),
+        acumulando o progresso em self._feito."""
+        if not unit_list or self._cancelar or self._erro:
             return
-        if total == 0:
-            self.terminou.emit(True, "Nada a executar.")
-            return
-
-        # particiona round-robin por unidade (produto); ordem entre produtos é
-        # irrelevante, e cada unidade mantém sua ordem interna
-        n = min(self._n_workers, total)
-        particoes = [self._units[i::n] for i in range(n)]
-        self.mensagem.emit(
-            f"Executando {total} produto(s) em {n} conexão(ões) paralela(s)…"
-        )
-
+        n = min(self._n_workers, len(unit_list))
+        particoes = [unit_list[i::n] for i in range(n)]
         threads = [
             threading.Thread(target=self._rodar_particao, args=(p,), daemon=True)
             for p in particoes
         ]
         for t in threads:
             t.start()
-
-        stats_con = None
-        try:
-            stats_con = conectar(self._cfg, buffers=BUFFERS_PARALELO)
-        except Exception:
-            stats_con = None
-
         while any(t.is_alive() for t in threads):
             time.sleep(0.3)
             with self._lock:
@@ -227,9 +211,37 @@ class ExecucaoWorker(QThread):
             self.progresso.emit(feito, total, time.monotonic() - t0)
             if stats_con is not None:
                 self.estatisticas.emit(_coletar_stats(stats_con))
-
         for t in threads:
             t.join()
+
+    def run(self) -> None:
+        total = len(self._pre_units) + len(self._units)
+        t0 = time.monotonic()
+        if not self._fazer_backup():
+            return
+        if total == 0:
+            self.terminou.emit(True, "Nada a executar.")
+            return
+
+        n = min(self._n_workers, max(1, total))
+        self.mensagem.emit(
+            f"Executando {total} passo(s) em até {self._n_workers} "
+            "conexão(ões) paralela(s)…"
+        )
+
+        stats_con = None
+        try:
+            stats_con = conectar(self._cfg, buffers=BUFFERS_PARALELO)
+        except Exception:
+            stats_con = None
+
+        # fase prévia (ex.: recompute geral ou DELETE do desfazer) e depois a
+        # fase principal (os lançamentos/recomputes)
+        if self._pre_units:
+            self.mensagem.emit(f"Fase prévia: {len(self._pre_units)} passo(s)…")
+        self._fase(self._pre_units, t0, total, stats_con)
+        self._fase(self._units, t0, total, stats_con)
+
         if stats_con is not None:
             try:
                 self.estatisticas.emit(_coletar_stats(stats_con))
@@ -343,14 +355,15 @@ class ConferenciaWorker(QThread):
 class ExecucaoDialog(QDialog):
     def __init__(self, cfg: ConexaoConfig, units: list,
                  commit_interval: int, backup_path: str | None = None,
-                 n_workers: int = 4, parent=None):
+                 n_workers: int = 4, pre_units: list | None = None,
+                 titulo: str = "Executar no banco", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Executar no banco")
+        self.setWindowTitle(titulo)
         self.resize(620, 560)
-        self._total = len(units)
+        self._total = len(units) + len(pre_units or [])
         self._t0 = time.monotonic()
         self._worker = ExecucaoWorker(
-            cfg, units, commit_interval, backup_path, n_workers, self
+            cfg, units, commit_interval, backup_path, n_workers, pre_units, self
         )
         self._build_ui()
         if backup_path:

@@ -221,6 +221,18 @@ A **preparação** (consultas ao banco para montar os lançamentos) roda numa
 thread, com uma janela *Preparando lançamentos…* — a interface não trava
 enquanto isso, mesmo em bases grandes.
 
+Com **Recomputar estoque de todos os itens antes de executar** marcado, uma fase
+prévia recomputa todos os produtos (desde o início) antes dos ajustes — corrige
+saldos gravados divergentes, evitando deltas/validações errados. É mais lento.
+
+### Desfazer no banco
+
+O botão **Desfazer no banco…** desfaz um lançamento: exclui do `KARDEX` os
+movimentos com a **data/hora** e o **texto histórico** informados na interface
+(`DELETE FROM KARDEX WHERE KARDEX_DATA_HORA = … AND KARDEX_HISTORICO = …`) e
+recomputa os produtos afetados. É **destrutivo** — pede confirmação e backup
+antes, e não faz nada se não houver movimentos correspondentes.
+
 Com **Fazer backup do banco (gbak) antes de executar** marcado (padrão), o app
 gera um `.fbk` com `gbak -b -g` antes dos lançamentos; se o backup falhar, a
 execução é **abortada** e nada é alterado. Requer o `gbak.exe` do Firebird
