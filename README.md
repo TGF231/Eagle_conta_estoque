@@ -217,6 +217,10 @@ estoque negativo por causa de movimentos posteriores à contagem), o app desfaz
 **só aquele produto** e segue com os demais. No fim, mostra "N aplicado(s), M
 pulado(s)" e lista no log cada produto pulado com o motivo.
 
+A **preparação** (consultas ao banco para montar os lançamentos) roda numa
+thread, com uma janela *Preparando lançamentos…* — a interface não trava
+enquanto isso, mesmo em bases grandes.
+
 Com **Fazer backup do banco (gbak) antes de executar** marcado (padrão), o app
 gera um `.fbk` com `gbak -b -g` antes dos lançamentos; se o backup falhar, a
 execução é **abortada** e nada é alterado. Requer o `gbak.exe` do Firebird

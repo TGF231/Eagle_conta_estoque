@@ -40,24 +40,15 @@ from .core import (
     build_date_str,
     build_script,
     comparar_estoque,
-    generate_bulk_units,
-    generate_sql_statements,
-    generate_zero_statements,
     read_many,
     validate_history,
     validate_rows,
 )
-from .db import (
-    DBError,
-    conectar,
-    estoque_e_preco_todos,
-    estoque_na_data,
-    listar_produtos_ativos,
-    listar_todos_produtos,
-)
+from .db import DBError
 from .executor import ConferenciaWorker, ExecucaoDialog
 from .mapeamento import MapeamentoDialog
 from .packager import write_package
+from .preparacao import PreparacaoWorker, preparar_no_banco, preparar_sem_banco
 from .verificacao import VerificacaoDialog
 
 APP_TITULO = "Eagle Contagem de Estoque"
@@ -520,162 +511,43 @@ class KardexWindow(QWidget):
             self._resumo(info, unidas, len(result.issues), pacote_dir), role="ok"
         )
 
+    def _garantir_conexao(self) -> bool:
+        """Garante que há uma conexão configurada (pede na tela se faltar)."""
+        if self._db_config is None or not self._db_config.database.strip():
+            dialog = ConexaoDialog(self, self._db_config)
+            if not dialog.exec():
+                return False
+            self._db_config = dialog.config()
+        return True
+
     def _preparar_statements(self, agregadas, history, date_str,
                              forcar_banco: bool = False):
-        """Monta os lançamentos aplicando os filtros que dependem do banco:
-        pular códigos fora de PRODUTOS, pular itens cujo estoque na data já bate
-        e (se marcado) zerar os não contados. Consulta o banco só quando algum
-        desses filtros está ativo (ou `forcar_banco`). Devolve (statements, info)
-        ou None se o usuário cancelar / houver erro."""
-        if self.lote_chk.isChecked():
-            return self._preparar_lote(agregadas, history, date_str)
-
+        """Prepara as unidades para a **geração de arquivo** (síncrono). A
+        execução usa a versão em thread (ver _executar_no_banco)."""
+        lote = self.lote_chk.isChecked()
         precisa = (
-            forcar_banco
+            lote
+            or forcar_banco
             or self.zerar_chk.isChecked()
             or self.pacote_chk.isChecked()
             or self.pular_iguais_chk.isChecked()
         )
-        existentes = list(agregadas)
-        info = {"contados": len(existentes), "fora": 0, "iguais": 0,
-                "zerados": 0, "ja_zerados": 0}
-
-        if precisa:
-            if self._db_config is None or not self._db_config.database.strip():
-                dialog = ConexaoDialog(self, self._db_config)
-                if not dialog.exec():
-                    QMessageBox.information(
-                        self, "Cancelado",
-                        "Conexão não informada — nada foi gerado.",
-                    )
-                    return None
-                self._db_config = dialog.config()
-
-            conn = None
-            try:
-                conn = conectar(self._db_config)
-                produtos = set(listar_todos_produtos(conn))
-
-                # pula códigos que não existem em PRODUTOS
-                antes = len(existentes)
-                existentes = [r for r in existentes if r.produtos_id in produtos]
-                info["fora"] = antes - len(existentes)
-
-                # produtos contados (e existentes) — nunca são zerados, mesmo
-                # os pulados por já estarem iguais
-                contados_ids = {r.produtos_id for r in existentes}
-
-                # pula itens cujo estoque NA DATA (anterior) já bate com a contagem
-                if self.pular_iguais_chk.isChecked():
-                    est = estoque_na_data(
-                        conn, [r.produtos_id for r in existentes], date_str
-                    )
-                    antes = len(existentes)
-                    existentes = [
-                        r for r in existentes
-                        if round(r.quantidade, 5)
-                        != round(est.get(r.produtos_id, 0.0), 5)
-                    ]
-                    info["iguais"] = antes - len(existentes)
-
-                info["contados"] = len(existentes)
-                count_stmts = generate_sql_statements(existentes, history, date_str)
-                units = [
-                    (str(r.produtos_id), [s])
-                    for r, s in zip(existentes, count_stmts)
-                ]
-
-                if self.zerar_chk.isChecked():
-                    ativos = listar_produtos_ativos(conn)
-                    nao_contados = sorted(ativos - contados_ids)
-                    # não zera de novo quem já está zerado na data
-                    est_zero = estoque_na_data(conn, nao_contados, date_str)
-                    a_zerar = [
-                        pid for pid in nao_contados
-                        if round(est_zero.get(pid, 0.0), 5) != 0
-                    ]
-                    info["ja_zerados"] = len(nao_contados) - len(a_zerar)
-                    zero = generate_zero_statements(a_zerar, history, date_str)
-                    units += [(str(pid), [s]) for pid, s in zip(a_zerar, zero)]
-                    info["zerados"] = len(zero)
-            except DBError as exc:
-                QMessageBox.critical(self, "Erro no banco", str(exc))
-                self._set_status("Falha ao consultar o banco.", role="erro")
-                return None
-            finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-
-            return units, info
-
-        count_stmts = generate_sql_statements(existentes, history, date_str)
-        units = [
-            (str(r.produtos_id), [s]) for r, s in zip(existentes, count_stmts)
-        ]
-        return units, info
-
-    def _preparar_lote(self, agregadas, history, date_str):
-        """Modo lote: aplica, por produto, o delta (contado − estoque na data)
-        via INSERT bruto + recompute. Não zera tudo; se 'zerar não contados'
-        estiver marcado, os ativos ausentes da contagem entram com alvo 0."""
-        if self._db_config is None or not self._db_config.database.strip():
-            dialog = ConexaoDialog(self, self._db_config)
-            if not dialog.exec():
-                QMessageBox.information(
-                    self, "Cancelado", "Conexão não informada — nada foi gerado."
-                )
-                return None
-            self._db_config = dialog.config()
-
-        conn = None
-        try:
-            conn = conectar(self._db_config)
-            produtos = set(listar_todos_produtos(conn))
-            ativos = (
-                listar_produtos_ativos(conn)
-                if self.zerar_chk.isChecked() else set()
+        if not precisa:
+            return preparar_sem_banco(agregadas, history, date_str)
+        if not self._garantir_conexao():
+            QMessageBox.information(
+                self, "Cancelado", "Conexão não informada — nada foi gerado."
             )
-            dados = estoque_e_preco_todos(conn, date_str)
+            return None
+        try:
+            return preparar_no_banco(
+                self._db_config, agregadas, history, date_str,
+                lote, self.zerar_chk.isChecked(), self.pular_iguais_chk.isChecked(),
+            )
         except DBError as exc:
             QMessageBox.critical(self, "Erro no banco", str(exc))
             self._set_status("Falha ao consultar o banco.", role="erro")
             return None
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-        existentes = [r for r in agregadas if r.produtos_id in produtos]
-        fora = len(agregadas) - len(existentes)
-        contados_ids = {r.produtos_id for r in existentes}
-
-        alvos = {r.produtos_id: r.quantidade for r in existentes}
-        if self.zerar_chk.isChecked():
-            for pid in ativos - contados_ids:
-                alvos[pid] = 0.0
-
-        estoque = {pid: v[0] for pid, v in dados.items()}
-        preco = {pid: v[1] for pid, v in dados.items()}
-
-        units, binfo = generate_bulk_units(
-            alvos, estoque, preco, history, date_str
-        )
-        info = {
-            "contados": len(contados_ids),
-            "fora": fora,
-            "iguais": 0,
-            "zerados": max(0, binfo["lancados"] - len(contados_ids)),
-            "ja_zerados": 0,
-            "lote": True,
-            "lancados": binfo["lancados"],
-            "delta_zero": binfo["pulados_delta_zero"],
-        }
-        return units, info
 
     @staticmethod
     def _resumo(info: dict, unidas: int, issues: int, pacote_dir=None) -> str:
@@ -803,14 +675,39 @@ class KardexWindow(QWidget):
             aggregate_rows(result.valid_rows), key=lambda r: r.produtos_id
         )
 
-        # força a consulta ao banco para filtrar códigos fora de PRODUTOS
-        # (senão a procedure abortaria) e aplicar os demais filtros marcados
-        prep = self._preparar_statements(
-            agregadas, history, date_str, forcar_banco=True
-        )
-        if prep is None:
+        if not self._garantir_conexao():
             return
-        units, info = prep
+
+        # prepara os lançamentos NUMA THREAD, com janela de progresso — as
+        # consultas ao banco podem demorar e não podem travar a interface
+        prog = QProgressDialog("Preparando lançamentos…", None, 0, 0, self)
+        prog.setWindowTitle("Executar no banco")
+        prog.setMinimumDuration(0)
+        prog.setCancelButton(None)
+        prog.setValue(0)
+        worker = PreparacaoWorker(
+            self._db_config, agregadas, history, date_str,
+            self.lote_chk.isChecked(), self.zerar_chk.isChecked(),
+            self.pular_iguais_chk.isChecked(), self,
+        )
+        estado = {"units": None, "info": None, "erro": None}
+        direto = Qt.ConnectionType.DirectConnection
+        worker.concluido.connect(
+            lambda u, i: estado.update(units=u, info=i), direto
+        )
+        worker.erro.connect(lambda m: estado.__setitem__("erro", m), direto)
+        worker.start()
+        while worker.isRunning():
+            QApplication.processEvents()
+            worker.wait(50)
+        QApplication.processEvents()
+        prog.reset()
+
+        if estado["erro"]:
+            QMessageBox.critical(self, "Erro no banco", estado["erro"])
+            self._set_status("Falha ao preparar.", role="erro")
+            return
+        units, info = estado["units"], estado["info"]
         if not units:
             QMessageBox.warning(
                 self, "Nada a executar",
