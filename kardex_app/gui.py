@@ -200,12 +200,12 @@ class KardexWindow(QWidget):
         raiz.addWidget(self.pular_iguais_chk)
 
         self.lote_chk = QCheckBox(
-            "Modo zerar tudo e recontar (inserts em lote, rápido; sequencial)"
+            "Modo lote (inserts brutos + recompute, mais rápido; sequencial)"
         )
         self.lote_chk.setToolTip(
-            "Zera o estoque de TODOS os produtos na data (1s antes) e relança a "
-            "contagem como entrada. Usa INSERTs brutos + recompute por produto, "
-            "em vez da procedure. Roda sequencial (a ordem importa)."
+            "Faz o mesmo que a procedure (delta = contagem − estoque na data), "
+            "mas via INSERT bruto no KARDEX + recompute por produto, em vez de "
+            "chamar a procedure item a item. Roda sequencial (a ordem importa)."
         )
         raiz.addWidget(self.lote_chk)
 
@@ -417,14 +417,6 @@ class KardexWindow(QWidget):
         time_part = self.time_edit.time().toString("HH:mm:ss")
         return build_date_str(date_part, time_part)
 
-    def _build_zero_date_str(self) -> str:
-        """1 segundo antes da data-base — usado no modo lote para o zeramento
-        vir antes da contagem no recompute (sem empate de data/hora)."""
-        from PySide6.QtCore import QDateTime
-
-        dt = QDateTime(self.date_edit.date(), self.time_edit.time()).addSecs(-1)
-        return dt.toString("yyyy-MM-dd HH:mm:ss")
-
     def _generate_sql(self) -> None:
         self.log.clear()
 
@@ -616,8 +608,9 @@ class KardexWindow(QWidget):
         return statements, info
 
     def _preparar_lote(self, agregadas, history, date_str):
-        """Modo lote: zera TODOS os produtos (1s antes da data) e relança a
-        contagem, com INSERTs brutos + recompute por produto."""
+        """Modo lote: aplica, por produto, o delta (contado − estoque na data)
+        via INSERT bruto + recompute. Não zera tudo; se 'zerar não contados'
+        estiver marcado, os ativos ausentes da contagem entram com alvo 0."""
         if self._db_config is None or not self._db_config.database.strip():
             dialog = ConexaoDialog(self, self._db_config)
             if not dialog.exec():
@@ -627,12 +620,15 @@ class KardexWindow(QWidget):
                 return None
             self._db_config = dialog.config()
 
-        zero_dt = self._build_zero_date_str()
         conn = None
         try:
             conn = conectar(self._db_config)
             produtos = set(listar_todos_produtos(conn))
-            dados = estoque_e_preco_todos(conn, zero_dt)
+            ativos = (
+                listar_produtos_ativos(conn)
+                if self.zerar_chk.isChecked() else set()
+            )
+            dados = estoque_e_preco_todos(conn, date_str)
         except DBError as exc:
             QMessageBox.critical(self, "Erro no banco", str(exc))
             self._set_status("Falha ao consultar o banco.", role="erro")
@@ -646,25 +642,47 @@ class KardexWindow(QWidget):
 
         existentes = [r for r in agregadas if r.produtos_id in produtos]
         fora = len(agregadas) - len(existentes)
-        contagem = {r.produtos_id: r.quantidade for r in existentes}
+        contados_ids = {r.produtos_id for r in existentes}
+
+        alvos = {r.produtos_id: r.quantidade for r in existentes}
+        if self.zerar_chk.isChecked():
+            for pid in ativos - contados_ids:
+                alvos[pid] = 0.0
+
         estoque = {pid: v[0] for pid, v in dados.items()}
         preco = {pid: v[1] for pid, v in dados.items()}
 
         stmts, binfo = generate_bulk_statements(
-            contagem, estoque, preco, history, date_str, zero_dt
+            alvos, estoque, preco, history, date_str
         )
         info = {
-            "contados": binfo["contados"],
+            "contados": len(contados_ids),
             "fora": fora,
             "iguais": 0,
-            "zerados": binfo["zerados"],
+            "zerados": max(0, binfo["lancados"] - len(contados_ids)),
             "ja_zerados": 0,
             "lote": True,
+            "lancados": binfo["lancados"],
+            "delta_zero": binfo["pulados_delta_zero"],
         }
         return stmts, info
 
     @staticmethod
     def _resumo(info: dict, unidas: int, issues: int, pacote_dir=None) -> str:
+        if info.get("lote"):
+            msg = (f"OK (lote): {info.get('lancados', 0)} lançamento(s), "
+                   f"{info['contados']} contado(s).")
+            if info.get("delta_zero"):
+                msg += f" {info['delta_zero']} sem alteração (delta 0)."
+            if info.get("fora"):
+                msg += f" {info['fora']} fora do banco pulado(s)."
+            if unidas > 0:
+                msg += f" {unidas} linha(s) unida(s)."
+            if issues:
+                msg += f" {issues} linha(s) ignorada(s)."
+            if pacote_dir:
+                msg += f" Pacote em: {pacote_dir}"
+            return msg
         msg = f"OK: {info['contados']} produto(s) contado(s)."
         if unidas > 0:
             msg += f" {unidas} linha(s) unida(s) por código repetido."

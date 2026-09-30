@@ -409,56 +409,44 @@ def _insert_kardex(tipo: int, dt: str, history_sql: str, pid: int,
 
 
 def generate_bulk_statements(
-    contagem: dict,
+    alvos: dict,
     estoque: dict,
     preco: dict,
     history: str,
     base_dt: str,
-    zero_dt: str,
 ) -> tuple[list[str], dict]:
-    """Modo "zerar tudo e recontar" com INSERTs em lote (rápido).
+    """Modo lote (rápido): para cada produto, insere **um** movimento com o
+    delta necessário para chegar à quantidade-alvo (mesma lógica da procedure,
+    porém via INSERT bruto), seguido do recompute daquele produto.
 
-    - `contagem`: {produtos_id: quantidade contada} (já agregada, só existentes).
-    - `estoque`: {produtos_id: estoque anterior a `zero_dt`} para TODOS os
-      produtos (ausente = 0).
+    - `alvos`: {produtos_id: quantidade desejada} — contagem (e, se for o caso,
+      0 para itens a zerar).
+    - `estoque`: {produtos_id: estoque anterior a `base_dt`} (ausente = 0).
     - `preco`: {produtos_id: PRODUTO_PRECO_CUSTO}.
-    - `zero_dt`: 1s antes de `base_dt` — garante que o zeramento venha antes da
-      contagem no recompute, sem ambiguidade de mesma data/hora.
 
-    Fase 1: zera (em `zero_dt`) todo produto com estoque != 0. Fase 2: lança a
-    contagem (em `base_dt`) como entrada a partir de 0. Recompute uma vez por
-    produto afetado, a partir de `zero_dt`. Replica a lógica da procedure
-    (preço = custo, entrada/saída). Devolve (statements, info)."""
+    delta = alvo − estoque anterior. delta 0 → nada. delta > 0 → entrada;
+    delta < 0 → saída. Não zera tudo: só mexe nos produtos informados, com o
+    delta mínimo — evitando o negativo que o "zerar tudo" provocava na
+    KARDEX_RECOMPUTA."""
     hist = escape_sql_text(history.strip().upper())
     stmts: list[str] = []
-    afetados: set[int] = set()
-    info = {"zerados": 0, "contados": 0}
+    info = {"lancados": 0, "pulados_delta_zero": 0}
 
-    # Fase 1 — zerar tudo que tem estoque
-    for pid, est in estoque.items():
-        if round(float(est), QUANTIDADE_SCALE) == 0:
+    for pid in sorted(alvos):
+        alvo = float(alvos[pid])
+        est = float(estoque.get(pid, 0.0))
+        delta = round(alvo - est, QUANTIDADE_SCALE)
+        if delta == 0:
+            info["pulados_delta_zero"] += 1
             continue
         p = float(preco.get(pid, 0.0))
-        if est > 0:  # saída para chegar a zero
-            tipo, qtd, total = 1, -est, p * est
-        else:        # estoque negativo: entrada para chegar a zero
-            tipo, qtd, total = 0, -est, p * (-est)
-        stmts.append(_insert_kardex(tipo, zero_dt, hist, pid, qtd, p, total))
-        afetados.add(int(pid))
-        info["zerados"] += 1
-
-    # Fase 2 — lançar a contagem como entrada a partir de zero
-    for pid, qty in contagem.items():
-        afetados.add(int(pid))
-        if round(float(qty), QUANTIDADE_SCALE) == 0:
-            continue  # fica em zero pela fase 1 (ou já era 0)
-        p = float(preco.get(pid, 0.0))
-        stmts.append(_insert_kardex(0, base_dt, hist, pid, qty, p, p * qty))
-        info["contados"] += 1
-
-    # Recompute uma vez por produto afetado, cobrindo zero (zero_dt) e contagem
-    for pid in sorted(afetados):
-        stmts.append(f"EXECUTE PROCEDURE KARDEX_RECOMPUTA({pid}, '{zero_dt}');")
+        if delta > 0:  # entrada
+            tipo, total = 0, p * delta
+        else:          # saída (delta negativo)
+            tipo, total = 1, p * (-delta)
+        stmts.append(_insert_kardex(tipo, base_dt, hist, pid, delta, p, total))
+        stmts.append(f"EXECUTE PROCEDURE KARDEX_RECOMPUTA({int(pid)}, '{base_dt}');")
+        info["lancados"] += 1
 
     return stmts, info
 

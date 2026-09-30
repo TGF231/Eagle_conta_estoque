@@ -157,22 +157,24 @@ independentemente do idioma da conexão. Os lançamentos saem ordenados por
 código. Não há bloco de recompute separado: a própria `KARDEX_ALTERA_QUANTIDADE`
 recomputa o estoque do produto ao final.
 
-## Modo "zerar tudo e recontar" (inserts em lote)
+## Modo lote (inserts em lote)
 
-Além do modo padrão (ajuste por delta via `KARDEX_ALTERA_QUANTIDADE`), há o
-checkbox **Modo zerar tudo e recontar**. Nele o app:
+Além do modo padrão (chamando `KARDEX_ALTERA_QUANTIDADE` por item), há o
+checkbox **Modo lote**. Ele faz a **mesma coisa que a procedure**, mas via
+INSERT bruto no `KARDEX`, o que é mais rápido em bases grandes:
 
-- **zera** o estoque de **todos** os produtos com estoque ≠ 0 na data, com um
-  INSERT bruto no `KARDEX` **1 segundo antes** da data informada;
-- **relança a contagem** como entrada a partir de 0, na data-base exata;
-- **recomputa** uma vez cada produto afetado (a partir do instante do zero).
+- para cada produto, calcula o **delta** = contagem − estoque na data e insere
+  **um** movimento (entrada se positivo, saída se negativo), na data informada;
+- delta 0 é pulado; com **zerar não contados** marcado, os ativos ausentes da
+  contagem entram com alvo 0 (delta = −estoque);
+- em seguida chama `KARDEX_RECOMPUTA` para o produto.
 
-Usa INSERTs em lote em vez de chamar a procedure por item (mais rápido) e
-replica a lógica dela (preço = `PRODUTO_PRECO_CUSTO`, entrada/saída, origem 5).
-O offset de 1 segundo garante que o zeramento venha antes da contagem no
-recompute. Roda **sequencial** (a ordem importa) e sempre com **backup** antes.
-Por fazer INSERT direto, valide num backup/base de teste antes de usar em
-produção.
+Replica a lógica da procedure (preço = `PRODUTO_PRECO_CUSTO`, entrada/saída,
+origem 5). Roda **sequencial** (a ordem insert→recompute importa) e sempre com
+**backup** antes. Como a `KARDEX_RECOMPUTA` recalcula o saldo e **proíbe estoque
+negativo**, um produto pode ser recusado se o ajuste o levar a negativo — o
+mesmo que aconteceria pela procedure. Por fazer INSERT direto, valide num
+backup/base de teste antes de usar em produção.
 
 ## Conferir resultado
 

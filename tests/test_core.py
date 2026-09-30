@@ -188,39 +188,37 @@ def test_comparar_estoque_arredonda_5_casas():
     assert r.iguais and not r.divergentes
 
 
-def test_generate_bulk_statements_zera_tudo_e_reconta():
+def test_generate_bulk_statements_delta_por_produto():
     from kardex_app.core import generate_bulk_statements
 
-    contagem = {1: 15.0, 2: 0.0}          # produto 1 contado 15, produto 2 contado 0
-    estoque = {1: 10.0, 2: 5.0, 3: 8.0}   # 3 não está na contagem
+    alvos = {1: 15.0, 2: 3.0, 3: 0.0}     # alvos desejados
+    estoque = {1: 10.0, 2: 5.0, 3: 8.0}   # estoque anterior na data
     preco = {1: 2.0, 2: 3.0, 3: 4.0}
     stmts, info = generate_bulk_statements(
-        contagem, estoque, preco, "AJUSTE",
-        "2026-09-29 10:00:00", "2026-09-29 09:59:59",
+        alvos, estoque, preco, "AJUSTE", "2026-09-29 10:00:00"
     )
     txt = "\n".join(stmts)
-    # zera os 3 produtos com estoque (1, 2, 3) em 09:59:59
-    assert info["zerados"] == 3
-    assert txt.count("INSERT INTO KARDEX") == 3 + 1  # 3 zeros + 1 entrada (prod 1)
-    # produto 1: entrada de 15 na data-base
-    assert "'2026-09-29 10:00:00'" in txt and "15" in txt
-    assert info["contados"] == 1  # só o produto 1 (o 2 foi contado 0)
-    # recompute a partir do zero_dt para cada afetado (1, 2, 3)
+    # 1: 15-10=+5 entrada; 2: 3-5=-2 saída; 3: 0-8=-8 saída → 3 movimentos
+    assert info["lancados"] == 3
+    assert txt.count("INSERT INTO KARDEX") == 3
     assert txt.count("KARDEX_RECOMPUTA") == 3
-    assert "'2026-09-29 09:59:59'" in txt
+    # todos no base_dt (sem zero_dt separado)
+    assert "'2026-09-29 10:00:00'" in txt
+    # produto 1: entrada (tipo 0) de +5
+    assert "VALUES (0, 5, -1, '2026-09-29 10:00:00', 'AJUSTE', 1, 0, 5," in txt
+    # produto 2: saída (tipo 1) de -2
+    assert "'AJUSTE', 2, 0, -2," in txt
 
 
-def test_generate_bulk_statements_estoque_zero_nao_zera():
+def test_generate_bulk_statements_delta_zero_pula():
     from kardex_app.core import generate_bulk_statements
 
-    # produto sem estoque anterior não recebe movimento de zeramento
     stmts, info = generate_bulk_statements(
-        {1: 5.0}, {1: 0.0}, {1: 2.0}, "X",
-        "2026-09-29 10:00:00", "2026-09-29 09:59:59",
+        {1: 10.0}, {1: 10.0}, {1: 2.0}, "X", "2026-09-29 10:00:00"
     )
-    assert info["zerados"] == 0
-    # só a entrada da contagem + 1 recompute
-    assert "\n".join(stmts).count("INSERT INTO KARDEX") == 1
+    assert info["lancados"] == 0
+    assert info["pulados_delta_zero"] == 1
+    assert stmts == []
 
 
 def test_generate_zero_statements():
