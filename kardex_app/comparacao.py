@@ -61,11 +61,30 @@ class ComparacaoDialog(QDialog):
         raiz.addWidget(self.tabela, 1)
 
         botoes = QHBoxLayout()
+        self.btn_copiar = QPushButton("Copiar diferenças")
+        self.btn_copiar.clicked.connect(self._copiar_diferencas)
+        botoes.addWidget(self.btn_copiar)
         botoes.addStretch(1)
         fechar = QPushButton("Fechar")
         fechar.clicked.connect(self.accept)
         botoes.addWidget(fechar)
         raiz.addLayout(botoes)
+
+    def _copiar_diferencas(self) -> None:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+
+        linhas = ["PRODUTO\tCONTADO\tESTOQUE_NA_DATA\tDIFERENCA"]
+        for pid, contado, disp in self._r.divergentes:
+            linhas.append(
+                f"{pid}\t{format_quantidade(contado)}\t"
+                f"{format_quantidade(disp)}\t{format_quantidade(contado - disp)}"
+            )
+        QApplication.clipboard().setText("\n".join(linhas))
+        self.btn_copiar.setText("Copiado!")
+        QTimer.singleShot(
+            1500, lambda: self.btn_copiar.setText("Copiar diferenças")
+        )
 
     def _preencher(self) -> None:
         r = self._r

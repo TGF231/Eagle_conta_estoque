@@ -176,6 +176,19 @@ negativo**, um produto pode ser recusado se o ajuste o levar a negativo — o
 mesmo que aconteceria pela procedure. Por fazer INSERT direto, valide num
 backup/base de teste antes de usar em produção.
 
+## Tipo fiscal (uso/consumo e ativo imobilizado)
+
+Produtos com `PRODUTO_TIPO` **07 (Material de Uso e Consumo)** ou **08 (Ativo
+Imobilizado)** não movimentam estoque. Ao preparar os lançamentos, esses itens
+são **ignorados** e o resumo avisa quantos foram descartados por esse motivo.
+
+## Copiar resultados
+
+O log da tela principal, o log da execução e a conferência têm botão de
+**Copiar** para a área de transferência. Na conferência, o botão **Copiar
+diferenças** copia **apenas as divergências**, em formato tabular (Produto,
+Contado, Estoque na data, Diferença) — pronto para colar numa planilha.
+
 ## Conferir resultado
 
 Depois de aplicar o ajuste, o botão **Conferir resultado…** compara a contagem

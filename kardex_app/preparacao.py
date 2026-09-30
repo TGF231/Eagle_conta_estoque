@@ -18,6 +18,7 @@ from .core import (
     generate_zero_statements,
 )
 from .db import (
+    TIPOS_SEM_ESTOQUE,
     ConexaoConfig,
     DBError,
     conectar,
@@ -27,12 +28,24 @@ from .db import (
     listar_todos_produtos,
     pids_do_lancamento,
     sql_delete_lancamento,
+    tipos_fiscais,
 )
 
 
 def _info_base() -> dict:
     return {"contados": 0, "fora": 0, "iguais": 0, "zerados": 0,
-            "ja_zerados": 0}
+            "ja_zerados": 0, "nao_movimenta": 0}
+
+
+def _remover_sem_estoque(conn, existentes):
+    """Remove os produtos de tipo que não movimenta estoque (uso/consumo,
+    ativo imobilizado). Devolve (existentes_ok, qtd_removidos)."""
+    tipos = tipos_fiscais(conn, [r.produtos_id for r in existentes])
+    sem = {pid for pid, t in tipos.items() if t in TIPOS_SEM_ESTOQUE}
+    if not sem:
+        return existentes, 0
+    ok = [r for r in existentes if r.produtos_id not in sem]
+    return ok, len(existentes) - len(ok)
 
 
 def preparar_sem_banco(agregadas, history, date_str):
@@ -51,6 +64,10 @@ def _prep_procedure(conn, agregadas, history, date_str, zerar, pular_iguais):
     antes = len(agregadas)
     existentes = [r for r in agregadas if r.produtos_id in produtos]
     info["fora"] = antes - len(existentes)
+
+    # tira os que não movimentam estoque (uso/consumo, ativo imobilizado)
+    existentes, info["nao_movimenta"] = _remover_sem_estoque(conn, existentes)
+
     contados_ids = {r.produtos_id for r in existentes}
 
     if pular_iguais:
@@ -89,6 +106,10 @@ def _prep_lote(conn, agregadas, history, date_str, zerar):
 
     existentes = [r for r in agregadas if r.produtos_id in produtos]
     fora = len(agregadas) - len(existentes)
+
+    # tira os que não movimentam estoque (uso/consumo, ativo imobilizado)
+    existentes, nao_movimenta = _remover_sem_estoque(conn, existentes)
+
     contados_ids = {r.produtos_id for r in existentes}
 
     alvos = {r.produtos_id: r.quantidade for r in existentes}
@@ -104,6 +125,7 @@ def _prep_lote(conn, agregadas, history, date_str, zerar):
     info.update({
         "contados": len(contados_ids),
         "fora": fora,
+        "nao_movimenta": nao_movimenta,
         "lote": True,
         "lancados": binfo["lancados"],
         "delta_zero": binfo["pulados_delta_zero"],

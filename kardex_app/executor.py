@@ -417,6 +417,9 @@ class ExecucaoDialog(QDialog):
         raiz.addWidget(self.log, 1)
 
         botoes = QHBoxLayout()
+        self.btn_copiar = QPushButton("Copiar log")
+        self.btn_copiar.clicked.connect(self._copiar_log)
+        botoes.addWidget(self.btn_copiar)
         botoes.addStretch(1)
         self.btn_cancelar = QPushButton("Cancelar")
         self.btn_cancelar.clicked.connect(self._cancelar)
@@ -479,6 +482,12 @@ class ExecucaoDialog(QDialog):
         self.status.setText(msg)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
+
+    def _copiar_log(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(self.log.toPlainText())
+        self.btn_copiar.setText("Copiado!")
+        QTimer.singleShot(1500, lambda: self.btn_copiar.setText("Copiar log"))
 
     def _cancelar(self) -> None:
         self.btn_cancelar.setEnabled(False)

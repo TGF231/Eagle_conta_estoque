@@ -269,9 +269,16 @@ class KardexWindow(QWidget):
         raiz.addLayout(acao)
 
         # ------------------------------------------------------------- log
+        log_row = QHBoxLayout()
+        log_row.setContentsMargins(0, 0, 0, 0)
         log_label = QLabel("LINHAS IGNORADAS NA ÚLTIMA GERAÇÃO")
         log_label.setProperty("role", "secao")
-        raiz.addWidget(log_label)
+        log_row.addWidget(log_label)
+        log_row.addStretch(1)
+        self.log_copiar_btn = QPushButton("Copiar")
+        self.log_copiar_btn.clicked.connect(self._copiar_log)
+        log_row.addWidget(self.log_copiar_btn)
+        raiz.addLayout(log_row)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -400,6 +407,18 @@ class KardexWindow(QWidget):
         # guarda a config para reaproveitar na próxima abertura (sem a senha
         # persistir em disco — fica só em memória nesta sessão)
         self._db_config = dialog.config()
+
+    def _copiar_log(self) -> None:
+        from PySide6.QtCore import QTimer
+
+        partes = []
+        if self.log.toPlainText().strip():
+            partes.append(self.log.toPlainText())
+        if self.status_label.text().strip():
+            partes.append(self.status_label.text())
+        QApplication.clipboard().setText("\n".join(partes))
+        self.log_copiar_btn.setText("Copiado!")
+        QTimer.singleShot(1500, lambda: self.log_copiar_btn.setText("Copiar"))
 
     @staticmethod
     def _repolir(widget) -> None:
@@ -574,6 +593,9 @@ class KardexWindow(QWidget):
                    f"{info['contados']} contado(s).")
             if info.get("delta_zero"):
                 msg += f" {info['delta_zero']} sem alteração (delta 0)."
+            if info.get("nao_movimenta"):
+                msg += (f" {info['nao_movimenta']} de uso/consumo ou ativo "
+                        "imobilizado ignorado(s).")
             if info.get("fora"):
                 msg += f" {info['fora']} fora do banco pulado(s)."
             if unidas > 0:
@@ -592,6 +614,9 @@ class KardexWindow(QWidget):
             msg += f" {info['iguais']} já igual(is) pulado(s)."
         if info.get("ja_zerados"):
             msg += f" {info['ja_zerados']} já zerado(s) ignorado(s)."
+        if info.get("nao_movimenta"):
+            msg += (f" {info['nao_movimenta']} de uso/consumo ou ativo "
+                    "imobilizado ignorado(s) (não movimentam estoque).")
         if info.get("fora"):
             msg += f" {info['fora']} fora do banco pulado(s)."
         if issues:

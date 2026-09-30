@@ -114,6 +114,21 @@ def test_erro_de_consulta_vira_dberror():
         verificar_codigos(ExplodingConn(), ["1"])
 
 
+def test_tipos_sem_estoque_constante():
+    from kardex_app.db import TIPOS_SEM_ESTOQUE
+
+    # 07 = uso/consumo, 08 = ativo imobilizado
+    assert TIPOS_SEM_ESTOQUE == {7, 8}
+
+
+def test_sql_delete_lancamento_escapa_aspas():
+    from kardex_app.db import sql_delete_lancamento
+
+    sql = sql_delete_lancamento("2026-09-30 10:00:00", "O'BRIEN")
+    assert "KARDEX_DATA_HORA = '2026-09-30 10:00:00'" in sql
+    assert "'O''BRIEN'" in sql
+
+
 def test_listar_produtos_ativos():
     conn = FakeConn(produtos={1, 2, 3}, referencias={}, ativos={1, 3})
     assert listar_produtos_ativos(conn) == {1, 3}

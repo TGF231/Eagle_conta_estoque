@@ -181,6 +181,33 @@ def estoque_e_preco_todos(conn, data_base: str) -> dict:
     return out
 
 
+# PRODUTO_TIPO que NÃO movimenta estoque (ver comentário da coluna em
+# ddl PRODUTOS): 07 = Material de Uso e Consumo, 08 = Ativo Imobilizado.
+TIPOS_SEM_ESTOQUE = {7, 8}
+
+
+def tipos_fiscais(conn, produtos_ids) -> dict:
+    """{PRODUTOS_ID: PRODUTO_TIPO} para os produtos informados."""
+    ids = [int(p) for p in produtos_ids]
+    if not ids:
+        return {}
+    cur = conn.cursor()
+    out: dict[int, int] = {}
+    for lote in _lotes(ids, CHUNK):
+        marcadores = ", ".join(["?"] * len(lote))
+        sql = (
+            "SELECT PRODUTOS_ID, PRODUTO_TIPO FROM PRODUTOS "
+            f"WHERE PRODUTOS_ID IN ({marcadores})"
+        )
+        try:
+            cur.execute(sql, list(lote))
+            for pid, tipo in cur.fetchall():
+                out[int(pid)] = int(tipo) if tipo is not None else -1
+        except Exception as exc:
+            raise DBError(f"Falha ao consultar tipo fiscal: {exc}") from exc
+    return out
+
+
 def pids_do_lancamento(conn, data_base: str, history: str) -> list[int]:
     """PRODUTOS_ID distintos de movimentos gravados na data/hora e com o texto
     histórico informados — os afetados por um lançamento a desfazer."""
