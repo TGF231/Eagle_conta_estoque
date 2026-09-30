@@ -408,6 +408,46 @@ def _insert_kardex(tipo: int, dt: str, history_sql: str, pid: int,
     )
 
 
+def achatar(units: list) -> list[str]:
+    """Achata unidades [(rotulo, [stmts])] numa lista simples de statements."""
+    return [s for _, stmts in units for s in stmts]
+
+
+def generate_bulk_units(
+    alvos: dict,
+    estoque: dict,
+    preco: dict,
+    history: str,
+    base_dt: str,
+) -> tuple[list, dict]:
+    """Igual ao delta por produto, mas devolve **unidades** [(pid, [insert,
+    recompute])] para execução isolada (savepoint por produto)."""
+    hist = escape_sql_text(history.strip().upper())
+    units: list = []
+    info = {"lancados": 0, "pulados_delta_zero": 0}
+    for pid in sorted(alvos):
+        alvo = float(alvos[pid])
+        est = float(estoque.get(pid, 0.0))
+        delta = round(alvo - est, QUANTIDADE_SCALE)
+        if delta == 0:
+            info["pulados_delta_zero"] += 1
+            continue
+        p = float(preco.get(pid, 0.0))
+        if delta > 0:
+            tipo, total = 0, p * delta
+        else:
+            tipo, total = 1, p * (-delta)
+        units.append((
+            str(int(pid)),
+            [
+                _insert_kardex(tipo, base_dt, hist, pid, delta, p, total),
+                f"EXECUTE PROCEDURE KARDEX_RECOMPUTA({int(pid)}, '{base_dt}');",
+            ],
+        ))
+        info["lancados"] += 1
+    return units, info
+
+
 def generate_bulk_statements(
     alvos: dict,
     estoque: dict,

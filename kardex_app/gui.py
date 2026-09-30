@@ -35,10 +35,11 @@ from .core import (
     SOURCE_FILE_FILTER,
     FileImportError,
     aggregate_rows,
+    achatar,
     build_date_str,
     build_script,
     comparar_estoque,
-    generate_bulk_statements,
+    generate_bulk_units,
     generate_sql_statements,
     generate_zero_statements,
     read_many,
@@ -481,8 +482,8 @@ class KardexWindow(QWidget):
         prep = self._preparar_statements(agregadas, history, date_str)
         if prep is None:
             return  # usuário cancelou a conexão / falha de banco
-        statements, info = prep
-        if not statements:
+        units, info = prep
+        if not units:
             QMessageBox.warning(
                 self, "Nada a gerar",
                 "Nenhum lançamento restou após os filtros (fora do banco / já "
@@ -491,6 +492,7 @@ class KardexWindow(QWidget):
             self._set_status("Nada a gerar.", role="aviso")
             return
 
+        statements = achatar(units)
         commit_interval = self.commit_spin.value()
         script_content = build_script(statements, commit_interval=commit_interval)
         try:
@@ -576,7 +578,11 @@ class KardexWindow(QWidget):
                     info["iguais"] = antes - len(existentes)
 
                 info["contados"] = len(existentes)
-                statements = generate_sql_statements(existentes, history, date_str)
+                count_stmts = generate_sql_statements(existentes, history, date_str)
+                units = [
+                    (str(r.produtos_id), [s])
+                    for r, s in zip(existentes, count_stmts)
+                ]
 
                 if self.zerar_chk.isChecked():
                     ativos = listar_produtos_ativos(conn)
@@ -589,7 +595,7 @@ class KardexWindow(QWidget):
                     ]
                     info["ja_zerados"] = len(nao_contados) - len(a_zerar)
                     zero = generate_zero_statements(a_zerar, history, date_str)
-                    statements += zero
+                    units += [(str(pid), [s]) for pid, s in zip(a_zerar, zero)]
                     info["zerados"] = len(zero)
             except DBError as exc:
                 QMessageBox.critical(self, "Erro no banco", str(exc))
@@ -602,10 +608,13 @@ class KardexWindow(QWidget):
                     except Exception:
                         pass
 
-            return statements, info
+            return units, info
 
-        statements = generate_sql_statements(existentes, history, date_str)
-        return statements, info
+        count_stmts = generate_sql_statements(existentes, history, date_str)
+        units = [
+            (str(r.produtos_id), [s]) for r, s in zip(existentes, count_stmts)
+        ]
+        return units, info
 
     def _preparar_lote(self, agregadas, history, date_str):
         """Modo lote: aplica, por produto, o delta (contado − estoque na data)
@@ -652,7 +661,7 @@ class KardexWindow(QWidget):
         estoque = {pid: v[0] for pid, v in dados.items()}
         preco = {pid: v[1] for pid, v in dados.items()}
 
-        stmts, binfo = generate_bulk_statements(
+        units, binfo = generate_bulk_units(
             alvos, estoque, preco, history, date_str
         )
         info = {
@@ -665,7 +674,7 @@ class KardexWindow(QWidget):
             "lancados": binfo["lancados"],
             "delta_zero": binfo["pulados_delta_zero"],
         }
-        return stmts, info
+        return units, info
 
     @staticmethod
     def _resumo(info: dict, unidas: int, issues: int, pacote_dir=None) -> str:
@@ -784,8 +793,8 @@ class KardexWindow(QWidget):
         )
         if prep is None:
             return
-        statements, info = prep
-        if not statements:
+        units, info = prep
+        if not units:
             QMessageBox.warning(
                 self, "Nada a executar",
                 "Nenhum lançamento restou após os filtros.",
@@ -797,8 +806,9 @@ class KardexWindow(QWidget):
             self,
             "Executar no banco",
             f"Isto vai ALTERAR o estoque no banco:\n{self._db_config.database}\n\n"
-            f"{len(statements)} lançamento(s).\n{resumo}\n\n"
-            "Recomenda-se um backup antes. Continuar?",
+            f"{len(units)} produto(s).\n{resumo}\n\n"
+            "Produtos que resultarem em estoque negativo são pulados (a operação "
+            "não trava). Recomenda-se um backup antes. Continuar?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -819,10 +829,9 @@ class KardexWindow(QWidget):
             if not backup_path.lower().endswith(".fbk"):
                 backup_path += ".fbk"
 
-        # o modo lote roda sequencial (a ordem zero→contagem→recompute importa)
-        n_workers = 1 if self.lote_chk.isChecked() else self.workers_spin.value()
+        n_workers = self.workers_spin.value()
         ExecucaoDialog(
-            self._db_config, statements, self.commit_spin.value(),
+            self._db_config, units, self.commit_spin.value(),
             backup_path, n_workers, self
         ).exec()
         self._set_status(f"Execução no banco: {resumo}", role="ok")

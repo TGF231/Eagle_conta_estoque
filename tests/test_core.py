@@ -210,6 +210,23 @@ def test_generate_bulk_statements_delta_por_produto():
     assert "'AJUSTE', 2, 0, -2," in txt
 
 
+def test_generate_bulk_units_agrupa_por_produto():
+    from kardex_app.core import achatar, generate_bulk_units
+
+    units, info = generate_bulk_units(
+        {1: 15.0, 2: 3.0}, {1: 10.0, 2: 5.0}, {1: 2.0, 2: 3.0},
+        "AJUSTE", "2026-09-29 10:00:00",
+    )
+    assert info["lancados"] == 2
+    # cada unidade: rótulo do produto + [INSERT, RECOMPUTA]
+    assert [u[0] for u in units] == ["1", "2"]
+    assert all(len(u[1]) == 2 for u in units)
+    assert "INSERT INTO KARDEX" in units[0][1][0]
+    assert "KARDEX_RECOMPUTA(1" in units[0][1][1]
+    # achatar volta a lista simples
+    assert len(achatar(units)) == 4
+
+
 def test_generate_bulk_statements_delta_zero_pula():
     from kardex_app.core import generate_bulk_statements
 

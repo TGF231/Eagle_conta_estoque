@@ -42,6 +42,16 @@ def _localizar(nome: str):
     return None
 
 
+def _resumir_erro(exc) -> str:
+    """Extrai a parte útil da EAGLEEXCEPTION (entre @...@) ou encurta o texto."""
+    txt = str(exc)
+    if "@" in txt:
+        partes = txt.split("@")
+        if len(partes) >= 2 and partes[1].strip():
+            return partes[1].strip().replace("||", " | ")
+    return txt.splitlines()[0][:200]
+
+
 def _coletar_stats(con) -> dict:
     """Estatísticas de transação/servidor que evoluem durante a execução.
     Best-effort: qualquer item que falhe é omitido."""
@@ -70,17 +80,19 @@ class ExecucaoWorker(QThread):
     mensagem = Signal(str)
     terminou = Signal(bool, str)          # sucesso, texto
 
-    def __init__(self, cfg: ConexaoConfig, statements: list[str],
+    def __init__(self, cfg: ConexaoConfig, units: list,
                  commit_interval: int, backup_path: str | None = None,
                  n_workers: int = 4, parent=None):
         super().__init__(parent)
         self._cfg = cfg
-        self._stmts = statements
+        # units: [(rotulo, [sql, ...])] — cada unidade roda isolada (savepoint)
+        self._units = units
         self._commit = max(1, int(commit_interval or 1))
         self._backup_path = backup_path
         self._n_workers = max(1, int(n_workers or 1))
         self._cancelar = False
         self._feito = 0
+        self._falhas: list = []
         self._erro = None
         self._lock = threading.Lock()
 
@@ -123,27 +135,40 @@ class ExecucaoWorker(QThread):
         self.mensagem.emit(f"Backup gerado: {self._backup_path}")
         return True
 
-    def _rodar_particao(self, stmts: list[str]) -> None:
+    def _rodar_particao(self, units: list) -> None:
         """Executado numa thread própria, com sua própria conexão/transação.
-        Cada produto é independente (linhas distintas no KARDEX), então
-        partições diferentes não conflitam."""
+        Cada unidade (produto) roda isolada por SAVEPOINT: se falhar (ex.:
+        estoque negativo na recompute), desfaz só aquela e continua as demais."""
         con = None
         try:
             con = conectar(self._cfg)
             cur = con.cursor()
             n = 0
-            for sql in stmts:
-                if self._cancelar or self._erro:
+            for rotulo, stmts in units:
+                if self._cancelar:
                     con.rollback()
                     return
-                cur.execute(sql)
+                cur.execute("SAVEPOINT SP_KARDEX")
+                try:
+                    for sql in stmts:
+                        cur.execute(sql)
+                except Exception as exc:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT SP_KARDEX")
+                    except Exception:
+                        pass
+                    with self._lock:
+                        self._falhas.append((rotulo, _resumir_erro(exc)))
+                        self._feito += 1
+                    continue
+                cur.execute("RELEASE SAVEPOINT SP_KARDEX")
                 n += 1
                 with self._lock:
                     self._feito += 1
                 if n % self._commit == 0:
                     con.commit()
             con.commit()
-        except Exception as exc:
+        except Exception as exc:  # erro de conexão / fatal (não por-produto)
             with self._lock:
                 if self._erro is None:
                     self._erro = f"Erro na execução: {exc}"
@@ -160,7 +185,7 @@ class ExecucaoWorker(QThread):
                     pass
 
     def run(self) -> None:
-        total = len(self._stmts)
+        total = len(self._units)
         t0 = time.monotonic()
         if not self._fazer_backup():
             return
@@ -168,12 +193,12 @@ class ExecucaoWorker(QThread):
             self.terminou.emit(True, "Nada a executar.")
             return
 
-        # particiona round-robin (ordem é irrelevante); nº de workers limitado
-        # ao total de lançamentos
+        # particiona round-robin por unidade (produto); ordem entre produtos é
+        # irrelevante, e cada unidade mantém sua ordem interna
         n = min(self._n_workers, total)
-        particoes = [self._stmts[i::n] for i in range(n)]
+        particoes = [self._units[i::n] for i in range(n)]
         self.mensagem.emit(
-            f"Executando {total} lançamento(s) em {n} conexão(ões) paralela(s)…"
+            f"Executando {total} produto(s) em {n} conexão(ões) paralela(s)…"
         )
 
         threads = [
@@ -206,7 +231,16 @@ class ExecucaoWorker(QThread):
             except Exception:
                 pass
 
+        # reporta as falhas por produto (não fatais)
+        if self._falhas:
+            self.mensagem.emit(f"--- {len(self._falhas)} produto(s) pulado(s) ---")
+            for rotulo, msg in self._falhas[:200]:
+                self.mensagem.emit(f"Produto {rotulo}: {msg}")
+            if len(self._falhas) > 200:
+                self.mensagem.emit(f"... e mais {len(self._falhas) - 200}.")
+
         elapsed = time.monotonic() - t0
+        ok = total - len(self._falhas)
         if self._erro is not None:
             self.terminou.emit(
                 False, f"{self._erro} (partições sem commit sofreram rollback)."
@@ -214,28 +248,28 @@ class ExecucaoWorker(QThread):
         elif self._cancelar:
             self.terminou.emit(
                 False,
-                f"Cancelado após {self._feito} de {total} "
-                "(partições sem commit sofreram rollback).",
+                f"Cancelado: {ok} aplicado(s), {len(self._falhas)} pulado(s), "
+                f"restante não processado.",
             )
         else:
             self.progresso.emit(total, total, elapsed)
-            self.terminou.emit(
-                True, f"Concluído: {total} lançamento(s) em {elapsed:.1f}s "
-                f"({n} conexões)."
-            )
+            resumo = f"Concluído em {elapsed:.1f}s ({n} conexão(ões)): {ok} aplicado(s)"
+            if self._falhas:
+                resumo += f", {len(self._falhas)} pulado(s) (veja o log)"
+            self.terminou.emit(True, resumo + ".")
 
 
 class ExecucaoDialog(QDialog):
-    def __init__(self, cfg: ConexaoConfig, statements: list[str],
+    def __init__(self, cfg: ConexaoConfig, units: list,
                  commit_interval: int, backup_path: str | None = None,
                  n_workers: int = 4, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Executar no banco")
         self.resize(620, 560)
-        self._total = len(statements)
+        self._total = len(units)
         self._t0 = time.monotonic()
         self._worker = ExecucaoWorker(
-            cfg, statements, commit_interval, backup_path, n_workers, self
+            cfg, units, commit_interval, backup_path, n_workers, self
         )
         self._build_ui()
         if backup_path:

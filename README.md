@@ -204,8 +204,14 @@ A execução é **paralela**: o campo **Conexões paralelas** (padrão 4) define
 quantas conexões/transações simultâneas processam os lançamentos. Como cada
 produto é independente no `KARDEX`, os lançamentos são divididos entre as
 conexões sem conflito (a ordem por código é dispensada), acelerando bastante em
-bases grandes. Cada conexão comita a cada X e, em erro/cancelamento, desfaz
-apenas o seu próprio lote não commitado.
+bases grandes. Cada conexão comita a cada X e, em cancelamento, desfaz apenas o
+seu próprio lote não commitado.
+
+**Falhas são por produto, não travam tudo:** cada produto roda isolado por
+`SAVEPOINT`. Se a `KARDEX_RECOMPUTA` recusar um item (ex.: o ajuste levaria a
+estoque negativo por causa de movimentos posteriores à contagem), o app desfaz
+**só aquele produto** e segue com os demais. No fim, mostra "N aplicado(s), M
+pulado(s)" e lista no log cada produto pulado com o motivo.
 
 Com **Fazer backup do banco (gbak) antes de executar** marcado (padrão), o app
 gera um `.fbk` com `gbak -b -g` antes dos lançamentos; se o backup falhar, a
