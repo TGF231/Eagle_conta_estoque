@@ -28,6 +28,10 @@ from PySide6.QtWidgets import (
 from .db import ConexaoConfig, DBError, conectar, estoque_na_data
 from .packager import FB_BIN_CANDIDATES
 
+# Cache de páginas por conexão paralela — pequeno para caber muitas conexões sem
+# estourar a memória do servidor (erro -239 no Firebird Classic/SuperClassic).
+BUFFERS_PARALELO = 256
+
 
 def _connstring(cfg: ConexaoConfig) -> str:
     host = (cfg.host or "localhost").strip()
@@ -90,6 +94,8 @@ class ExecucaoWorker(QThread):
         self._commit = max(1, int(commit_interval or 1))
         self._backup_path = backup_path
         self._n_workers = max(1, int(n_workers or 1))
+        # cache pequeno só quando há paralelismo (evita -239)
+        self._buffers = BUFFERS_PARALELO if self._n_workers > 1 else None
         self._cancelar = False
         self._feito = 0
         self._falhas: list = []
@@ -141,7 +147,7 @@ class ExecucaoWorker(QThread):
         estoque negativo na recompute), desfaz só aquela e continua as demais."""
         con = None
         try:
-            con = conectar(self._cfg)
+            con = conectar(self._cfg, buffers=self._buffers)
             cur = con.cursor()
             n = 0
             for rotulo, stmts in units:
@@ -210,7 +216,7 @@ class ExecucaoWorker(QThread):
 
         stats_con = None
         try:
-            stats_con = conectar(self._cfg)
+            stats_con = conectar(self._cfg, buffers=BUFFERS_PARALELO)
         except Exception:
             stats_con = None
 
@@ -286,8 +292,9 @@ class ConferenciaWorker(QThread):
 
     def _consultar(self, sub: list) -> None:
         con = None
+        buffers = BUFFERS_PARALELO if self._n > 1 else None
         try:
-            con = conectar(self._cfg)
+            con = conectar(self._cfg, buffers=buffers)
             for i in range(0, len(sub), self.LOTE):
                 if self._erro or self._cancelar:
                     return

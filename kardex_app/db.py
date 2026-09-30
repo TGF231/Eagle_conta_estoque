@@ -72,9 +72,13 @@ def _configurar_firebird_msg() -> None:
         os.environ.setdefault("FIREBIRD", base)
 
 
-def conectar(config: ConexaoConfig):
+def conectar(config: ConexaoConfig, buffers: int | None = None):
     """Abre a conexão Firebird. Importa `fdb` de forma tardia para o app rodar
-    sem o driver quando a verificação não é usada."""
+    sem o driver quando a verificação não é usada.
+
+    `buffers` limita o cache de páginas da conexão; em execução paralela isso
+    evita o erro "Insufficient memory to allocate page buffer cache" (-239),
+    pois cada conexão (em Classic/SuperClassic) aloca seu próprio cache."""
     try:
         import fdb
     except ImportError as exc:  # driver ausente
@@ -96,15 +100,18 @@ def conectar(config: ConexaoConfig):
     if not config.database.strip():
         raise DBError("Informe o caminho (ou alias) do banco de dados.")
 
+    kwargs = dict(
+        host=config.host or "localhost",
+        port=int(config.port or 3050),
+        database=config.database,
+        user=config.user or "SYSDBA",
+        password=config.password or "",
+        charset=config.charset or "WIN1252",
+    )
+    if buffers:
+        kwargs["buffers"] = int(buffers)
     try:
-        return fdb.connect(
-            host=config.host or "localhost",
-            port=int(config.port or 3050),
-            database=config.database,
-            user=config.user or "SYSDBA",
-            password=config.password or "",
-            charset=config.charset or "WIN1252",
-        )
+        return fdb.connect(**kwargs)
     except Exception as exc:  # fdb.DatabaseError e afins
         raise DBError(f"Não foi possível conectar: {exc}") from exc
 
